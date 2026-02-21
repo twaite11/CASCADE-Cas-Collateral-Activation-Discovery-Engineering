@@ -107,6 +107,8 @@ def generate_evaluation_jsons(variant_fasta, baseline_id, metadata_path, out_dir
         variant_id = os.path.basename(variant_fasta).replace(".fasta", "")
 
     # 2. Retrieve the native crRNA used for this baseline
+    if not os.path.exists(metadata_path):
+        raise ValueError(f"Metadata file not found: {metadata_path}")
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
 

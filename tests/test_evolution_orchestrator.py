@@ -108,20 +108,20 @@ class TestExtractMutations:
     """Test extract_mutations."""
 
     def test_single_substitution(self, variant_fasta, baseline_json, tmpdir):
-        # variant has P at position 12 (1-based) vs baseline G
+        # variant has P at position 13 (1-based) vs baseline G
         base_dir = Path(baseline_json).parent
         with patch.object(orch, "BASE_JSON_DIR", str(base_dir)):
             muts = extract_mutations("baseline_id", variant_fasta)
         assert len(muts) >= 1
-        assert any("_P" in m or "12_" in m for m in muts)
+        assert any("_P" in m or "13_" in m for m in muts)
 
     def test_uses_baseline_fasta_when_provided(self, variant_fasta, tmpdir):
         baseline_fasta = tmpdir / "baseline.fasta"
         baseline_fasta.write_text(">baseline\nMAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG\n")
         variant = tmpdir / "v.fasta"
-        variant.write_text(">v\nMAAAAARAILXHPGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG\n")  # 12 G->P
+        variant.write_text(">v\nMAAAAARAILXHPGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG\n")  # 13 G->P
         muts = extract_mutations("x", str(variant), baseline_fasta_path=str(baseline_fasta))
-        assert any("12_P" in m for m in muts)
+        assert any("13_P" in m for m in muts)
 
     def test_detects_deletion(self, tmpdir):
         base = tmpdir / "base.fasta"

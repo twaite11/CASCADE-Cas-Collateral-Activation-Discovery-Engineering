@@ -44,9 +44,9 @@ FASTA_WITH_HEPN = """>test_cas13
 MAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG
 """
 
-# Variant with G->P at position 12 (1-based)
+# Variant with G->P at position 13 (1-based)
 FASTA_VARIANT_SINGLE_MUT = """>test_cas13_variant
-MAAAAARAILXHPGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG
+MAAAAARAILXHPGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG
 """
 
 # Baseline for mutation comparison
