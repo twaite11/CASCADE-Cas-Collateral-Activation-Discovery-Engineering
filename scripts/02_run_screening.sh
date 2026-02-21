@@ -4,6 +4,8 @@
 # This script executes the high-throughput 'True Cas' test utilizing 
 # the lightweight Protenix-Mini model to drastically save on compute costs.
 
+log_ts() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+
 JSON_DIR="../jsons"
 # Output under phase1_screening so evolution_orchestrator can find PDBs
 OUTPUT_DIR="../outputs/phase1_screening"
@@ -32,13 +34,11 @@ for json_file in "$JSON_DIR"/*.json; do
 
     # Check if prep succeeded
     if [ $? -ne 0 ]; then
-        echo "Error: inputprep failed for $base_name. Check logs."
+        log_ts "ERROR: inputprep failed for $base_name. Check logs."
         continue
     fi
 
-    # Step 2: Rapid Complex Assembly (Mini Model Screening)
-    # Applying strict kernel optimizations and bfloat16 for the GPU cluster
-    echo "[2/2] Running Protenix-Mini prediction..."
+    log_ts "[2/2] Running Protenix-Mini prediction (may take 2-10 min per hit)..."
     protenix predict \
         --input "$OUTPUT_DIR/${base_name}_prep/$(basename "$json_file")" \
         --out_dir "$OUTPUT_DIR/${base_name}_pred" \
@@ -49,7 +49,7 @@ for json_file in "$JSON_DIR"/*.json; do
         --trimul_kernel true \
         > "$OUTPUT_DIR/${base_name}_pred.log" 2>&1
 
-    echo "Completed $base_name. Outputs saved to $OUTPUT_DIR/${base_name}_pred/"
+    log_ts "Completed $base_name. Outputs saved to $OUTPUT_DIR/${base_name}_pred/"
 done
 
-echo "Phase 1 High-Throughput Screening Complete."
+log_ts "Phase 1 High-Throughput Screening Complete."

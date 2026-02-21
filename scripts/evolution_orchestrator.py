@@ -2,9 +2,20 @@ import os
 import json
 import re
 import shutil
+import gc
+import time
+import logging
 import importlib.util
 from glob import glob
 import numpy as np
+
+# --- Logging ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger(__name__)
 
 # --- Import our Production Functional Wrappers ---
 # Load pxdesign_wrapper from 03_pxdesign_wrapper.py (module names can't start with digits)
@@ -48,6 +59,11 @@ MAX_GENERATIONS = 20
 MISMATCH_COUNTS = (1, 2, 3)  # Test 1-, 2-, 3-mismatch off-targets; activity at higher count penalized harder
 SPECIFICITY_PENALTY_BASE = 0.3  # Base penalty; scaled by mismatch count (3mm > 2mm > 1mm)
 NUM_INITIAL_LINEAGES = 5
+
+# --- Memory / OOM mitigation (seconds; set to 0 to disable) ---
+SLEEP_AFTER_PXDESIGN = 2.0       # Allow CUDA driver to reclaim GPU memory after diffusion
+SLEEP_AFTER_PROTENIX_BASE = 2.0  # Allow reclaim after heavy base-model ternary prediction
+SLEEP_AFTER_PROTENIX_MINI = 0.0  # Optional: use 0.5 if OOM on back-to-back mini runs
 
 def compute_fitness(off_dist, on_dist, iptm_score, af2_ig_score, is_full_ternary=False, offtarget_by_mismatch=None):
     """
@@ -201,7 +217,7 @@ def extract_mutations(baseline_id, variant_fasta, baseline_fasta_path=None):
     return mutations
 
 def main_evolution_loop():
-    print("Initializing SwitchBlade Active Learning Evolution Loop...")
+    log.info("Initializing SwitchBlade Active Learning Evolution Loop...")
     os.makedirs(FAST_EVAL_DIR, exist_ok=True)
     os.makedirs(HIGH_FIDELITY_DIR, exist_ok=True)
 
@@ -216,7 +232,7 @@ def main_evolution_loop():
         for bid in list(domain_metadata.keys())[:NUM_INITIAL_LINEAGES]
     ]
     if not lineage_queue:
-        print("No baselines in metadata. Exiting.")
+        log.warning("No baselines in metadata. Exiting.")
         return
 
     baseline = lineage_queue.pop(0)
@@ -225,7 +241,7 @@ def main_evolution_loop():
     # Resolve Phase 1 PDB path
     pdbs = glob(f"{PHASE1_PDB_DIR}/{baseline_id}_pred/*.pdb")
     if not pdbs:
-        print(f"Warning: No Phase 1 PDB found for {baseline_id}. Trying next lineage...")
+        log.warning(f"No Phase 1 PDB found for {baseline_id}. Trying next lineage...")
         while lineage_queue:
             baseline = lineage_queue.pop(0)
             baseline_id, _, _, crrna_lookup_id = baseline
@@ -248,15 +264,15 @@ def main_evolution_loop():
     for generation_counter in range(1, MAX_GENERATIONS + 1):
         baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id = baseline
 
-        print(f"\n=======================================================")
-        print(f"=== Evolution Generation {generation_counter} | Baseline: {baseline_id} ===")
-        print(f"=======================================================")
+        log.info("=" * 60)
+        log.info(f"Evolution Generation {generation_counter} | Baseline: {baseline_id}")
+        log.info("=" * 60)
 
         metadata_override = None
         if baseline_fasta_path:
             metadata_override = build_metadata_override_for_evolved(baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata)
             if not metadata_override:
-                print(f"Warning: Could not build metadata for evolved baseline {baseline_id}. Skipping.")
+                log.warning(f"Could not build metadata for evolved baseline {baseline_id}. Skipping.")
                 if lineage_queue:
                     baseline = lineage_queue.pop(0)
                     baseline_id, _, _, crrna_lookup_id = baseline
@@ -277,7 +293,7 @@ def main_evolution_loop():
                 metadata_override=metadata_override,
             )
         except Exception as e:
-            print(f"PXDesign failed: {e}. Trying next lineage...")
+            log.error(f"PXDesign failed: {e}. Trying next lineage...")
             if lineage_queue:
                 baseline = lineage_queue.pop(0)
                 baseline_id, _, _, crrna_lookup_id = baseline
@@ -285,6 +301,10 @@ def main_evolution_loop():
                 if pdbs:
                     baseline = (baseline_id, pdbs[0], None, crrna_lookup_id)
             continue
+
+        if SLEEP_AFTER_PXDESIGN > 0:
+            time.sleep(SLEEP_AFTER_PXDESIGN)
+        gc.collect()
 
         if not new_variants_fastas:
             print("No variants generated. Trying next lineage...")
@@ -306,7 +326,7 @@ def main_evolution_loop():
             if not h1_idx:
                 continue
 
-            print(f"  -> Rapid Evaluating {variant_name}...")
+            log.info(f"Evaluating variant {variant_name} (Protenix mini OFF/ON - may take 2-5 min each)...")
             off_json, on_json = generate_evaluation_jsons(
                 variant_fasta, baseline_id, METADATA_FILE, FAST_EVAL_DIR, crrna_lookup_id=crrna_lookup_id
             )
@@ -315,11 +335,15 @@ def main_evolution_loop():
                 off_pdb, _ = run_protenix_inference(
                     off_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
                 )
+                if SLEEP_AFTER_PROTENIX_MINI > 0:
+                    time.sleep(SLEEP_AFTER_PROTENIX_MINI)
                 on_pdb, _ = run_protenix_inference(
                     on_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
                 )
+                if SLEEP_AFTER_PROTENIX_MINI > 0:
+                    time.sleep(SLEEP_AFTER_PROTENIX_MINI)
             except Exception as e:
-                print(f"     Protenix failed for {variant_name}: {e}")
+                log.warning(f"Protenix failed for {variant_name}: {e}")
                 fitness = compute_fitness(0, 999, 0.4, 0, False, None)
                 gym.register_evaluation(variant_name, mutations_made, 0, 999, 0.4, False, None)
                 results.append((variant_name, variant_fasta, fitness, 0, 999, 0.4, 0.0, None, None))
@@ -336,11 +360,14 @@ def main_evolution_loop():
             true_on_dist = on_dist
 
             if has_potential:
-                print(f"  Filter Passed. Triggering High-Fidelity Ternary Oracle...")
+                log.info("Filter passed. Running Protenix base ternary (may take 10-30 min)...")
 
                 hf_pdb, hf_summary = run_protenix_inference(
                     on_json, HIGH_FIDELITY_DIR, model_tier="base", seqres_db_path=SEQRES_DB_PATH
                 )
+                if SLEEP_AFTER_PROTENIX_BASE > 0:
+                    time.sleep(SLEEP_AFTER_PROTENIX_BASE)
+                gc.collect()
                 true_on_dist = calculate_hepn_shift(hf_pdb, h1_idx, h2_idx)
                 scores = extract_protenix_scores(hf_summary)
                 iptm, af2_ig = scores["iptm"], scores["af2_ig"]
@@ -356,6 +383,8 @@ def main_evolution_loop():
                         ot_pdb, _ = run_protenix_inference(
                             ot_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
                         )
+                        if SLEEP_AFTER_PROTENIX_MINI > 0:
+                            time.sleep(SLEEP_AFTER_PROTENIX_MINI)
                         ot_dist = calculate_hepn_shift(ot_pdb, h1_idx, h2_idx)
                         if n_mismatch not in offtarget_by_mismatch:
                             offtarget_by_mismatch[n_mismatch] = ot_dist
@@ -372,9 +401,10 @@ def main_evolution_loop():
                 variant_name, mutations_made, off_dist, true_on_dist, iptm, has_potential, offtarget_by_mismatch or None
             )
             results.append((variant_name, variant_fasta, fitness, off_dist, true_on_dist, iptm, af2_ig, hf_pdb_path, offtarget_by_mismatch))
+            gc.collect()
 
         if not results:
-            print("No valid results this generation. Trying next lineage...")
+            log.warning("No valid results this generation. Trying next lineage...")
             if lineage_queue:
                 baseline = lineage_queue.pop(0)
                 baseline_id, _, _, crrna_lookup_id = baseline
@@ -386,10 +416,10 @@ def main_evolution_loop():
         best = max(results, key=lambda r: r[2])
         best_name, best_fasta, best_fitness, best_off, best_on, best_iptm, best_af2_ig, best_hf_pdb, _ = best
 
-        print(f"\n  Best variant: {best_name} (fitness={best_fitness:.1f})")
+        log.info(f"Best variant: {best_name} (fitness={best_fitness:.1f})")
 
         if best_iptm >= MIN_IPTM_SCORE and best_af2_ig >= MIN_AF2_IG_SCORE and best_on <= MAX_ON_DISTANCE:
-            print(f"  ELITE TERNARY SWITCH FOUND! ipTM: {best_iptm:.3f} | AF2-IG: {best_af2_ig:.3f} | ON-Dist: {best_on:.1f}A")
+            log.info(f"ELITE TERNARY SWITCH FOUND! ipTM: {best_iptm:.3f} | AF2-IG: {best_af2_ig:.3f} | ON-Dist: {best_on:.1f}A")
             os.makedirs(FINAL_HITS_DIR, exist_ok=True)
             shutil.copy(best_fasta, os.path.join(FINAL_HITS_DIR, f"{best_name}_optimal.fasta"))
             if best_hf_pdb:
@@ -430,7 +460,7 @@ def main_evolution_loop():
         if gym.mutation_weights:
             bias_file = gym.generate_mpnn_bias_matrix(generation_counter)
 
-    print("\nEvolution loop complete.")
+    log.info("Evolution loop complete.")
 
 if __name__ == "__main__":
     main_evolution_loop()

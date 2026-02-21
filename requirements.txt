@@ -1,0 +1,6 @@
+# CASCADE pipeline dependencies
+# Python >= 3.11 required for Protenix
+
+numpy>=1.24.0
+biopython>=1.81
+protenix>=1.0.0

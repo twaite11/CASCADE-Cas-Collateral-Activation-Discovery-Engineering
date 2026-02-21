@@ -3,6 +3,9 @@ import json
 import subprocess
 import glob
 import random
+import logging
+
+log = logging.getLogger(__name__)
 
 # RNA Constants (Must match what we defined in 01_parse_and_annotate.py)
 DUMMY_SPACER_RNA = "GUCGACUGACGUACGUACGUACGU"
@@ -142,13 +145,15 @@ def generate_evaluation_jsons(variant_fasta, baseline_id, metadata_path, out_dir
 
 def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path=None):
     """
-    Executes the Protenix CLI.
+    Executes the Protenix CLI. Logs when starting long-running inference.
     model_tier="mini" for Script 4 (Fast Filter)
     model_tier="base" for Script 5 (High Fidelity Oracle)
     seqres_db_path: if set and path exists, runs inputprep first for better MSA quality (matches Phase 1).
     """
     os.makedirs(out_dir, exist_ok=True)
     base_name = os.path.basename(json_path).replace(".json", "")
+    tier_label = "mini" if model_tier == "mini" else "base"
+    log.info(f"Starting Protenix {tier_label} inference for {base_name} (this may take several minutes)...")
     predict_input = json_path
 
     # Optional: run inputprep first (matches Phase 1 workflow, improves MSA quality)

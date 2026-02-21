@@ -2,6 +2,9 @@ import subprocess
 import json
 import os
 import glob
+import logging
+
+log = logging.getLogger(__name__)
 
 def generate_frozen_rec_config(metadata_db_path, variant_id, out_dir, metadata_override=None):
     """
@@ -43,7 +46,7 @@ def run_pxdesign_generation(baseline_pdb, variant_id, metadata_path, bias_json_p
     both the structural freeze constraints and the Active Learning bias matrix.
     metadata_override: optional dict for evolved variants not in metadata file.
     """
-    print(f"[PXDesign] Generating {variant_count} mutations for {variant_id}...")
+    log.info(f"[PXDesign] Generating {variant_count} mutations for {variant_id} (this may take 5-15 min)...")
     os.makedirs(output_dir, exist_ok=True)
     
     # 1. Generate the dynamic freeze config to protect the crRNA pocket
@@ -68,7 +71,7 @@ def run_pxdesign_generation(baseline_pdb, variant_id, metadata_path, bias_json_p
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except subprocess.CalledProcessError as e:
-        print(f"PXDesign Execution Failed:\n{e.stderr}")
+        log.error(f"PXDesign Execution Failed:\n{e.stderr}")
         raise
         
     # 5. Return the newly generated FASTA files

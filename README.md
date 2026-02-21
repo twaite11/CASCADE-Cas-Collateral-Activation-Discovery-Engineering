@@ -48,6 +48,8 @@ Specificity Testing (1-, 2-, 3-Mismatch Off-Targets): For each variant that pass
 
 The Gym Feedback Matrix: Mutations from failed variants are penalized, while mutations from elite ternary structures are highly rewarded. The Gym exports these weights as a physical bias matrix (mpnn_bias_gen_X.json), continuously steering the PXDesign diffusion engine toward the optimal thermodynamic switch.
 
+**VPS Deployment:** See [VPS_DEPLOY.md](VPS_DEPLOY.md) for setup on RunPod/GPU VPS, venv creation, and running with logging.
+
 Project Structure
 
 /workspace/CASCADE/
@@ -64,6 +66,8 @@ Project Structure
 ├── jsons/                        # Protenix/AlphaFold3 compatible input payloads
 │
 ├── scripts/
+│   ├── setup_vps.sh              # Creates venv, installs deps
+│   ├── run_pipeline.sh           # Full pipeline with logging
 │   ├── 01_parse_and_annotate.py  # Ingests hits, maps domains, builds DB & JSONs
 │   ├── 02_run_screening.sh       # GPU-optimized Phase 1 Protenix-Mini filtering
 │   ├── 03_pxdesign_wrapper.py    # Invokes PXDesign diffusion generation

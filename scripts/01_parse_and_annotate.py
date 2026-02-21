@@ -4,6 +4,14 @@ import os
 import re
 import glob
 import sqlite3
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger(__name__)
 
 # --- Configuration ---
 DATA_DIR = "../data/mined_hits"
@@ -42,7 +50,7 @@ def init_db():
 def load_files_to_db(conn):
     """Parses all FASTA and CSV files in the DATA_DIR and streams them into SQLite."""
     if not os.path.exists(DATA_DIR):
-        print(f"Warning: Directory {DATA_DIR} does not exist. Creating it now.")
+        log.warning(f"Directory {DATA_DIR} does not exist. Creating it now.")
         os.makedirs(DATA_DIR, exist_ok=True)
         return 0
         
@@ -53,7 +61,7 @@ def load_files_to_db(conn):
     items_processed = 0
     
     # 1. Parse all FASTAs and stream base sequences
-    print("Streaming FASTA sequences to SQLite...")
+    log.info("Streaming FASTA sequences to SQLite...")
     for fasta in fasta_files:
         current_id = ""
         current_seq = []
@@ -84,7 +92,7 @@ def load_files_to_db(conn):
     conn.commit()
                 
     # 2. Parse all CSVs and update metadata
-    print("Streaming CSV metadata to SQLite...")
+    log.info("Streaming CSV metadata to SQLite...")
     for csv_file in csv_files:
         with open(csv_file, mode='r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
@@ -108,7 +116,7 @@ def identify_hepn_domains(conn):
     Scans sequences in the DB strictly for HEPN domains. 
     Processes sequentially using fetchmany() to prevent memory overloading.
     """
-    print("Scanning sequences for HEPN domains...")
+    log.info("Scanning sequences for HEPN domains (may take a minute for large DBs)...")
     
     cursor = conn.cursor()
     update_cursor = conn.cursor()
@@ -150,7 +158,7 @@ def identify_hepn_domains(conn):
             processed += 1
             
         conn.commit()
-        print(f"  ...processed {processed} sequences.")
+        log.info(f"  Processed {processed} sequences.")
 
 def generate_protenix_jsons(conn):
     """Builds Protenix JSONs from successful DB entries by chunking."""
@@ -215,12 +223,12 @@ def generate_protenix_jsons(conn):
     return generated_count
 
 def main():
-    print("Initializing SwitchBlade-Cas13 Local SQLite DB...")
+    log.info("Initializing SwitchBlade-Cas13 Local SQLite DB...")
     conn = init_db()
     
-    print(f"Scanning {DATA_DIR} for fasta and csv files...")
+    log.info(f"Scanning {DATA_DIR} for fasta and csv files...")
     total_loaded = load_files_to_db(conn)
-    print(f"Parsed {total_loaded} sequence boundaries into SQLite.")
+    log.info(f"Parsed {total_loaded} sequence boundaries into SQLite.")
     
     identify_hepn_domains(conn)
     
