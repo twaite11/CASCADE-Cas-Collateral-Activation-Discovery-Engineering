@@ -124,7 +124,7 @@ def identify_hepn_domains(conn):
     # Select only sequences that haven't been successfully processed yet
     cursor.execute("SELECT sequence_id, sequence FROM variants WHERE sequence IS NOT NULL")
     
-    motif = re.compile(r'R[AILMFVWY][A-Z]{3}H')
+    motif = re.compile(r'R.{4,6}H')
     processed = 0
     
     while True:

@@ -91,7 +91,7 @@ graph TD
         end
 
         subgraph Physics["Biophysical Scoring"]
-            PDBout --> HEPN["calculate_hepn_shift<br>RφX3H distance OFF vs ON"]
+            PDBout --> HEPN["calculate_hepn_shift<br>R.{4,6}H distance OFF vs ON"]
             JSONout --> Scores["extract_protenix_scores<br>ipTM, AF2-IG"]
         end
 

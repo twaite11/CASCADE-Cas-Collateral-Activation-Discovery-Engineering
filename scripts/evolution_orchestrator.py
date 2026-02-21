@@ -127,7 +127,7 @@ def build_metadata_override_for_evolved(baseline_id, baseline_fasta_path, crrna_
     """Build metadata override dict for evolved variants not in variant_domain_metadata.json."""
     with open(baseline_fasta_path, 'r') as f:
         seq = "".join([l.strip() for l in f if not l.startswith(">")])
-    motif = re.compile(r'R[AILMFVWY][A-Z]{3}H')
+    motif = re.compile(r'R.{4,6}H')
     matches = list(motif.finditer(seq))
     if len(matches) < 2:
         return None
@@ -175,14 +175,13 @@ def get_catalytic_histidine_indices(fasta_path):
             seq_lines.append(line)
         seq = "".join(seq_lines)
 
-    motif = re.compile(r'R[AILMFVWY][A-Z]{3}H')
+    motif = re.compile(r'R.{4,6}H')
     matches = list(motif.finditer(seq))
     if len(matches) < 2:
         return None, None
         
-    # Matches give the index of 'R'. The 'H' is 5 residues later.
-    # Add 1 because Biopython PDB parsing uses 1-based indexing.
-    return matches[0].start() + 6, matches[-1].start() + 6
+    # H is at the end of each match. match.end() gives 1-based index (Biopython PDB uses 1-based).
+    return matches[0].end(), matches[-1].end()
 
 def extract_mutations(baseline_id, variant_fasta, baseline_fasta_path=None):
     """Compares the new variant against the original sequence to map the mutations.

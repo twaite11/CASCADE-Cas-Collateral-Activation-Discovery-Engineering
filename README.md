@@ -30,7 +30,7 @@ Phase 1: High-Throughput Validation & Database Anchoring
 
 Ingestion: Parses the FASTA and CSV data into a memory-safe local SQLite database (cas13_variants.db), allowing the pipeline to handle hundreds of thousands of sequences without RAM overload.
 
-HEPN Anchoring: Utilizes the highly conserved $R\phi X_3H$ sequence signature to map the exact 3D structural boundaries of the catalytic HEPN1 and HEPN2 domains.
+HEPN Anchoring: Utilizes the highly conserved R.{4,6}H sequence signature to map the exact 3D structural boundaries of the catalytic HEPN1 and HEPN2 domains.
 
 True Cas Validation: Runs a rapid structural prediction using protenix-mini to filter out hits that fail to form a bilobed structure or fail to bind the native crRNA.
 
@@ -40,7 +40,7 @@ Unlike traditional static pipelines, CASCADE utilizes an autonomous Reinforcemen
 
 Generation & Constraint (03_pxdesign_wrapper.py): Generates structural variants by aggressively mutating the IDLs while mathematically freezing the spatial coordinates of the REC lobe. Supports evolved baselines via metadata_override when the baseline is not in the initial Phase 1 set.
 
-The Fast Filter (protenix_eval.py & pdb_kinematics.py): Variants are subjected to rapid OFF/ON state predictions. The spatial math engine calculates the precise Euclidean distance between the $R\phi X_3H$ motifs. We select variants where the motifs are >25Å apart in the OFF state, but snap to <12Å apart in the ON state.
+The Fast Filter (protenix_eval.py & pdb_kinematics.py): Variants are subjected to rapid OFF/ON state predictions. The spatial math engine calculates the precise Euclidean distance between the R.{4,6}H motifs. We select variants where the motifs are >25Å apart in the OFF state, but snap to <12Å apart in the ON state.
 
 Full Ternary Oracle Scoring: Variants that pass the filter are promoted to the high-fidelity protenix_base model. They are rigorously scored (ipTM, AF2-IG) exclusively in their full Ternary complex (Protein + crRNA + Tumor Fusion RNA).
 
@@ -49,6 +49,8 @@ Specificity Testing (1-, 2-, 3-Mismatch Off-Targets): For each variant that pass
 The Gym Feedback Matrix: Mutations from failed variants are penalized, while mutations from elite ternary structures are highly rewarded. The Gym exports these weights as a physical bias matrix (mpnn_bias_gen_X.json), continuously steering the PXDesign diffusion engine toward the optimal thermodynamic switch.
 
 **VPS Deployment:** See [VPS_DEPLOY.md](VPS_DEPLOY.md) for setup on RunPod/GPU VPS, venv creation, and running with logging.
+
+**Tests:** See [tests/README.md](tests/README.md). Run `pytest tests/ -v` (no GPU required).
 
 Project Structure
 
