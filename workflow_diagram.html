@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CASCADE Workflow Diagram</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <style>
+    body {
+      margin: 0;
+      padding: 2rem;
+      min-height: 100vh;
+      background: #0f172a;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    h1 {
+      color: #e2e8f0;
+      margin-bottom: 1.5rem;
+      font-weight: 600;
+    }
+    .mermaid {
+      background: #1e293b;
+      padding: 2rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+    }
+    .mermaid svg {
+      max-width: 100%;
+      height: auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>CASCADE Active Learning Evolution Loop</h1>
+  <p style="color:#94a3b8;max-width:800px;text-align:center;margin-bottom:2rem;">
+    From metagenomic hits to predicted Cas13-like suicide switches. Evolution selects the single best variant per generation, uses it as the next baseline, and scores specificity via off-target tests.
+  </p>
+  <pre class="mermaid">
+graph TD
+    %% ========== PHASE 1: BOOTSTRAP ==========
+    subgraph Phase1["Phase 1: Bootstrap Baselines"]
+        Mined["deep_hits_*.fasta<br>Metagenomic Cas13e-like ORFs"]
+        MetaCSV["deep_hits_*_metadata.csv<br>Native crRNA k-mers"]
+        Mined --> Parse
+        MetaCSV --> Parse
+        Parse["01_parse_and_annotate.py<br>SQLite DB + HEPN anchoring + JSONs"]
+        Parse --> Screen
+        Screen["02_run_screening.sh<br>protenix-mini filter"]
+        Screen --> Baselines["phase1_screening/<br>Baseline PDBs"]
+    end
+
+    Parse -.->|variant_domain_metadata.json| Loop
+    Baselines -.->|PDB templates| PXDesign
+
+    %% ========== PHASE 2: EVOLUTION LOOP ==========
+    subgraph Loop["Phase 2: Active Learning Evolution Loop"]
+        Baseline["Current Baseline<br>id + PDB + FASTA + crRNA_lookup"]
+        LineageQueue["Lineage Queue<br>Fallback Phase 1 IDs"]
+        Baseline --> PXDesign
+        LineageQueue -.->|On failure| Baseline
+
+        subgraph Gen["Variant Generation"]
+            PXDesign["run_pxdesign_generation<br>Diffusion + Frozen REC + MPNN Bias<br>+ metadata_override for evolved"]
+            Bias["mpnn_bias_gen_X.json<br>RL mutation weights"]
+            Bias -.->|Steers next gen| PXDesign
+            PXDesign --> Variants["25 Mutated .fasta<br>per generation"]
+        end
+
+        Variants --> GenJSON
+
+        subgraph Eval["Structural Evaluation"]
+            GenJSON["generate_evaluation_jsons<br>+ crrna_lookup_id"]
+            GenJSON --> OFF["OFF-State JSON<br>protein + crRNA"]
+            GenJSON --> ON["ON-State JSON<br>protein + crRNA + target"]
+            GenJSON --> OffTarget["Off-Target JSONs<br>scrambled + mismatch RNAs"]
+            OFF --> ProtenixMini
+            ON --> ProtenixMini
+            ProtenixMini["run_protenix_inference<br>mini: OFF + ON"]
+            ProtenixMini --> PassFilter{"Pass Filter?<br>OFF≥25A ON≤12A"}
+            PassFilter -->|Yes| ProtenixBase
+            ProtenixBase["run_protenix_inference<br>base: ternary ON"]
+            ProtenixBase --> PDBout["3D PDBs"]
+            ProtenixBase --> JSONout["Confidence JSON"]
+            PassFilter -->|Yes| OffTarget
+            OffTarget --> ProtenixOT["mini: off-target complexes"]
+            ProtenixOT --> OTDist["HEPN dist on off-targets<br>expect stay OFF ≥25A"]
+        end
+
+        subgraph Physics["Biophysical Scoring"]
+            PDBout --> HEPN["calculate_hepn_shift<br>RφX3H distance OFF vs ON"]
+            JSONout --> Scores["extract_protenix_scores<br>ipTM, AF2-IG"]
+        end
+
+        HEPN --> ComputeFitness
+        Scores --> ComputeFitness
+        OTDist --> ComputeFitness
+        PassFilter -->|No| ComputeFitness
+        ComputeFitness["compute_fitness<br>shift + ipTM + specificity penalty"]
+
+        subgraph Results["Collect & Rank"]
+            ComputeFitness --> Collect["All 25 scored"]
+            Collect --> SelectBest["Select SINGLE BEST<br>by fitness"]
+        end
+
+        SelectBest --> Gym
+        Gym["EvolutionGym.register_evaluation<br>Reward good mutations, penalize bad"]
+        Gym --> UpdateBias["generate_mpnn_bias_matrix"]
+        UpdateBias --> Bias
+
+        SelectBest --> EliteCheck{"Elite Switch?<br>ipTM≥0.85, AF2-IG≥0.80"}
+        EliteCheck -->|Yes| SaveElite["Save to optimized_switches/"]
+        SelectBest --> NextBaseline["Best variant becomes<br>NEXT BASELINE"]
+        NextBaseline --> Baseline
+    end
+
+    subgraph Series["Predicted Cas13-like Series"]
+        EliteOut["optimized_switches/<br>Elite FASTAs + Ternary PDBs<br>Ready for synthesis"]
+    end
+    SaveElite --> EliteOut
+
+    classDef bootstrap fill:#1e3a5f,stroke:#60a5fa,color:#fff
+    classDef gen fill:#14532d,stroke:#4ade80,color:#fff
+    classDef eval fill:#2d3748,stroke:#4fd1c5,color:#fff
+    classDef gym fill:#581c87,stroke:#c084fc,color:#fff
+    classDef output fill:#7c2d12,stroke:#f97316,color:#fff
+    classDef file fill:#1a202c,stroke:#94a3b8,color:#e2e8f0
+    class Mined,MetaCSV,Baselines,Variants,Bias,PDBout,JSONout file
+    class Parse,Screen,PXDesign,GenJSON,ProtenixMini,ProtenixBase,ProtenixOT,HEPN,Scores,Gym,UpdateBias,ComputeFitness function
+    class SaveElite,EliteOut,NextBaseline output
+  </pre>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      themeVariables: {
+        primaryColor: '#2d3748',
+        primaryTextColor: '#e2e8f0',
+        primaryBorderColor: '#4fd1c5',
+        lineColor: '#64748b',
+        secondaryColor: '#1e293b',
+        tertiaryColor: '#0f172a'
+      },
+      flowchart: {
+        useMaxWidth: true,
+        htmlLabels: true,
+        curve: 'basis'
+      }
+    });
+  </script>
+</body>
+</html>
