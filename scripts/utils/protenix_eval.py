@@ -12,19 +12,17 @@ DUMMY_TARGET_RNA = "AAAAAA" + TARGET_REGION + "AAAAAA"
 
 def generate_offtarget_sequences(target_rna, num_scrambled=1, num_mismatch=1, seed=None):
     """
-    Auto-generate off-target RNA sequences from the target.
+    Auto-generate off-target RNA sequences from the target (legacy).
     target_rna: the 24-nt target region (spacer complement).
     Returns list of off-target RNA strings with same flanking AAAAAA structure.
     """
     if seed is not None:
         random.seed(seed)
     offtargets = []
-    # Scrambled: random shuffle preserving composition
     for _ in range(num_scrambled):
         chars = list(target_rna)
         random.shuffle(chars)
         offtargets.append("AAAAAA" + "".join(chars) + "AAAAAA")
-    # Mismatch: 2-3 random substitutions
     for _ in range(num_mismatch):
         chars = list(target_rna)
         n_subs = random.randint(2, 3)
@@ -35,6 +33,30 @@ def generate_offtarget_sequences(target_rna, num_scrambled=1, num_mismatch=1, se
             chars[i] = random.choice(choices)
         offtargets.append("AAAAAA" + "".join(chars) + "AAAAAA")
     return offtargets
+
+
+def generate_mismatch_sequences(target_rna, mismatch_counts=(1, 2, 3), num_per_count=1, seed=None):
+    """
+    Generate off-target RNAs with exactly 1, 2, or 3 mismatches.
+    Returns list of (rna_string, mismatch_count) tuples.
+    Activity at greater mismatch count is worse (less specific) and will be penalized harder.
+    """
+    if seed is not None:
+        random.seed(seed)
+    results = []
+    for n_mismatch in mismatch_counts:
+        for _ in range(num_per_count):
+            chars = list(target_rna)
+            if n_mismatch > len(chars):
+                continue
+            subs = random.sample(range(len(chars)), n_mismatch)
+            for i in subs:
+                old = chars[i]
+                choices = [c for c in "ACGU" if c != old]
+                chars[i] = random.choice(choices)
+            rna = "AAAAAA" + "".join(chars) + "AAAAAA"
+            results.append((rna, n_mismatch))
+    return results
 
 
 def generate_offtarget_json(variant_fasta, crrna_lookup_id, metadata_path, off_target_rna, out_dir, suffix=""):

@@ -18,7 +18,7 @@ _spec.loader.exec_module(pxdesign_wrapper)
 from utils.protenix_eval import (
     generate_evaluation_jsons,
     run_protenix_inference,
-    generate_offtarget_sequences,
+    generate_mismatch_sequences,
     generate_offtarget_json,
     TARGET_REGION,
     DUMMY_SPACER_RNA,
@@ -45,21 +45,27 @@ MIN_IPTM_SCORE = 0.85
 MIN_AF2_IG_SCORE = 0.80
 # --- Evolution Loop Config ---
 MAX_GENERATIONS = 20
-NUM_OFFTARGET_TESTS = 2  # scrambled + mismatch variants for specificity
-SPECIFICITY_PENALTY_WEIGHT = 0.5
+MISMATCH_COUNTS = (1, 2, 3)  # Test 1-, 2-, 3-mismatch off-targets; activity at higher count penalized harder
+SPECIFICITY_PENALTY_BASE = 0.3  # Base penalty; scaled by mismatch count (3mm > 2mm > 1mm)
 NUM_INITIAL_LINEAGES = 5
 
-def compute_fitness(off_dist, on_dist, iptm_score, af2_ig_score, is_full_ternary=False, offtarget_min_dist=None):
+def compute_fitness(off_dist, on_dist, iptm_score, af2_ig_score, is_full_ternary=False, offtarget_by_mismatch=None):
     """
     Composite fitness for ranking variants.
-    Higher is better. Incorporates specificity penalty when offtarget_min_dist < MIN_OFF_DISTANCE.
+    Primary metric: non-active when unbound (high OFF dist), highly active when bound (low ON dist, high ipTM).
+    Specificity: penalize activity on 1-, 2-, 3-mismatch off-targets; greater mismatch activation = harder penalty.
     """
     multiplier = 2.0 if is_full_ternary else 1.0
     shift = off_dist - on_dist
     fitness = (shift - (MIN_OFF_DISTANCE - MAX_ON_DISTANCE)) + ((iptm_score - 0.7) * 50)
     fitness *= multiplier
-    if offtarget_min_dist is not None and offtarget_min_dist < MIN_OFF_DISTANCE:
-        fitness -= SPECIFICITY_PENALTY_WEIGHT * (MIN_OFF_DISTANCE - offtarget_min_dist)
+
+    # Progressive specificity penalty: activity at 3mm > 2mm > 1mm penalized harder
+    if offtarget_by_mismatch:
+        for n_mismatch, min_dist in offtarget_by_mismatch.items():
+            if min_dist is not None and min_dist < MIN_OFF_DISTANCE:
+                penalty = SPECIFICITY_PENALTY_BASE * n_mismatch * (MIN_OFF_DISTANCE - min_dist)
+                fitness -= penalty
     return fitness
 
 
@@ -70,9 +76,9 @@ class EvolutionGym:
         self.mutation_weights = {}
         self.generation_history = []
 
-    def register_evaluation(self, variant_id, mutations, off_dist, on_dist, iptm_score, is_full_ternary=False, offtarget_min_dist=None):
+    def register_evaluation(self, variant_id, mutations, off_dist, on_dist, iptm_score, is_full_ternary=False, offtarget_by_mismatch=None):
         """Records the performance of a variant's specific mutations."""
-        fitness = compute_fitness(off_dist, on_dist, iptm_score, 0.0, is_full_ternary, offtarget_min_dist)
+        fitness = compute_fitness(off_dist, on_dist, iptm_score, 0.0, is_full_ternary, offtarget_by_mismatch)
 
         self.generation_history.append({
             "variant": variant_id, "fitness": fitness, "mutations": mutations
@@ -237,7 +243,7 @@ def main_evolution_loop():
 
     generation_counter = 0
     bias_file = None
-    offtarget_seqs = generate_offtarget_sequences(TARGET_REGION, num_scrambled=1, num_mismatch=1, seed=42)
+    mismatch_seqs = generate_mismatch_sequences(TARGET_REGION, mismatch_counts=MISMATCH_COUNTS, num_per_count=1, seed=42)
 
     for generation_counter in range(1, MAX_GENERATIONS + 1):
         baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id = baseline
@@ -324,7 +330,7 @@ def main_evolution_loop():
             print(f"     [Filter] OFF: {off_dist:.1f}A | ON: {on_dist:.1f}A")
             has_potential = (off_dist >= MIN_OFF_DISTANCE) and (on_dist <= MAX_ON_DISTANCE)
 
-            offtarget_min_dist = None
+            offtarget_by_mismatch = {}
             hf_pdb_path = None
             iptm, af2_ig = 0.4, 0.0
             true_on_dist = on_dist
@@ -340,27 +346,32 @@ def main_evolution_loop():
                 iptm, af2_ig = scores["iptm"], scores["af2_ig"]
                 hf_pdb_path = hf_pdb
 
-                # Specificity: off-target tests
-                offtarget_dists = []
-                for i, ot_rna in enumerate(offtarget_seqs[:NUM_OFFTARGET_TESTS]):
+                # Specificity: 1-, 2-, 3-mismatch off-target tests; activity at higher count penalized harder
+                for i, (ot_rna, n_mismatch) in enumerate(mismatch_seqs):
                     try:
                         ot_json = generate_offtarget_json(
-                            variant_fasta, crrna_lookup_id, METADATA_FILE, ot_rna, FAST_EVAL_DIR, suffix=str(i)
+                            variant_fasta, crrna_lookup_id, METADATA_FILE, ot_rna, FAST_EVAL_DIR,
+                            suffix=f"{n_mismatch}mm_{i}"
                         )
                         ot_pdb, _ = run_protenix_inference(
                             ot_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
                         )
                         ot_dist = calculate_hepn_shift(ot_pdb, h1_idx, h2_idx)
-                        offtarget_dists.append(ot_dist)
+                        if n_mismatch not in offtarget_by_mismatch:
+                            offtarget_by_mismatch[n_mismatch] = ot_dist
+                        else:
+                            offtarget_by_mismatch[n_mismatch] = min(offtarget_by_mismatch[n_mismatch], ot_dist)
                     except Exception:
-                        offtarget_dists.append(MIN_OFF_DISTANCE)  # Assume specific on failure
-                offtarget_min_dist = min(offtarget_dists) if offtarget_dists else None
+                        offtarget_by_mismatch[n_mismatch] = MIN_OFF_DISTANCE  # Assume specific on failure
+                if offtarget_by_mismatch:
+                    mm_str = " | ".join(f"{k}mm:{v:.1f}A" for k, v in sorted(offtarget_by_mismatch.items()))
+                    print(f"     [Specificity] {mm_str}")
 
-            fitness = compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_min_dist)
+            fitness = compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None)
             gym.register_evaluation(
-                variant_name, mutations_made, off_dist, true_on_dist, iptm, has_potential, offtarget_min_dist
+                variant_name, mutations_made, off_dist, true_on_dist, iptm, has_potential, offtarget_by_mismatch or None
             )
-            results.append((variant_name, variant_fasta, fitness, off_dist, true_on_dist, iptm, af2_ig, hf_pdb_path, offtarget_min_dist))
+            results.append((variant_name, variant_fasta, fitness, off_dist, true_on_dist, iptm, af2_ig, hf_pdb_path, offtarget_by_mismatch))
 
         if not results:
             print("No valid results this generation. Trying next lineage...")
