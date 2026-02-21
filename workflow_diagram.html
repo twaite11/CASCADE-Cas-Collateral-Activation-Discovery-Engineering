@@ -37,7 +37,7 @@
 <body>
   <h1>CASCADE Active Learning Evolution Loop</h1>
   <p style="color:#94a3b8;max-width:800px;text-align:center;margin-bottom:2rem;">
-    From metagenomic hits to predicted Cas13-like suicide switches. Evolution selects the single best variant per generation, uses it as the next baseline, and scores specificity via off-target tests.
+    From metagenomic hits to predicted Cas13-like suicide switches. Evolution selects the single best variant per generation, uses it as the next baseline, and scores specificity via 1-, 2-, 3-mismatch off-target tests (activity at higher mismatch penalized harder).
   </p>
   <pre class="mermaid">
 graph TD
@@ -76,7 +76,7 @@ graph TD
             GenJSON["generate_evaluation_jsons<br>+ crrna_lookup_id"]
             GenJSON --> OFF["OFF-State JSON<br>protein + crRNA"]
             GenJSON --> ON["ON-State JSON<br>protein + crRNA + target"]
-            GenJSON --> OffTarget["Off-Target JSONs<br>scrambled + mismatch RNAs"]
+            GenJSON --> OffTarget["Off-Target JSONs<br>1-, 2-, 3-mismatch targets"]
             OFF --> ProtenixMini
             ON --> ProtenixMini
             ProtenixMini["run_protenix_inference<br>mini: OFF + ON"]
@@ -86,8 +86,8 @@ graph TD
             ProtenixBase --> PDBout["3D PDBs"]
             ProtenixBase --> JSONout["Confidence JSON"]
             PassFilter -->|Yes| OffTarget
-            OffTarget --> ProtenixOT["mini: off-target complexes"]
-            ProtenixOT --> OTDist["HEPN dist on off-targets<br>expect stay OFF ≥25A"]
+            OffTarget --> ProtenixOT["mini: 1/2/3-mismatch complexes"]
+            ProtenixOT --> OTDist["HEPN dist per mismatch<br>progressive penalty: 3mm > 2mm > 1mm"]
         end
 
         subgraph Physics["Biophysical Scoring"]
@@ -99,7 +99,7 @@ graph TD
         Scores --> ComputeFitness
         OTDist --> ComputeFitness
         PassFilter -->|No| ComputeFitness
-        ComputeFitness["compute_fitness<br>shift + ipTM + specificity penalty"]
+        ComputeFitness["compute_fitness<br>shift + ipTM + progressive mismatch penalty"]
 
         subgraph Results["Collect & Rank"]
             ComputeFitness --> Collect["All 25 scored"]
@@ -118,7 +118,7 @@ graph TD
     end
 
     subgraph Series["Predicted Cas13-like Series"]
-        EliteOut["optimized_switches/<br>Elite FASTAs + Ternary PDBs<br>Ready for synthesis"]
+        EliteOut["optimized_switches/<br>Elite FASTAs + PDBs + crRNA<br>Ready for synthesis"]
     end
     SaveElite --> EliteOut
 
