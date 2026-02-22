@@ -168,12 +168,13 @@ def baseline_json(tmpdir, sample_metadata_json):
     """Baseline Protenix JSON (from jsons/)."""
     meta = json.loads(Path(sample_metadata_json).read_text())
     crrna = meta["baseline_id"]["crRNA_repeat_used"] + "GUCGACUGACGUACGUACGUACGU"
+    # Protenix format: proteinChain/rnaSequence
     payload = [{
         "name": "baseline_id",
         "sequences": [
-            {"protein": {"id": "A", "sequence": "MAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG"}},
-            {"rna": {"id": "B", "sequence": crrna}},
-            {"rna": {"id": "C", "sequence": "AAAAAAACGUACGUACGUACGUCAGUCGACAAAAAA"}},
+            {"proteinChain": {"sequence": "MAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG", "count": 1}},
+            {"rnaSequence": {"sequence": crrna, "count": 1}},
+            {"rnaSequence": {"sequence": "AAAAAAACGUACGUACGUACGUCAGUCGACAAAAAA", "count": 1}},
         ],
     }]
     d = tmpdir / "jsons"

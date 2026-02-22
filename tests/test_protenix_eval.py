@@ -75,8 +75,8 @@ class TestGenerateEvaluationJsons:
         on = json.loads(Path(on_path).read_text())
         assert len(off[0]["sequences"]) == 2  # protein + crRNA
         assert len(on[0]["sequences"]) == 3   # protein + crRNA + target
-        assert "protein" in str(off)
-        assert "rna" in str(off)
+        assert "proteinChain" in str(off)
+        assert "rnaSequence" in str(off)
 
     def test_crrna_lookup_override(self, variant_fasta, sample_metadata_json, tmpdir):
         off_path, on_path = generate_evaluation_jsons(

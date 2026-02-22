@@ -6,7 +6,6 @@ import gc
 import time
 import logging
 import importlib.util
-from glob import glob
 import numpy as np
 
 # --- Logging ---
@@ -34,7 +33,7 @@ from utils.protenix_eval import (
     TARGET_REGION,
     DUMMY_SPACER_RNA,
 )
-from utils.pdb_kinematics import calculate_hepn_shift, extract_protenix_scores
+from utils.pdb_kinematics import calculate_hepn_shift, extract_protenix_scores, find_structure_files
 
 # --- Configuration ---
 METADATA_FILE = "../metadata/variant_domain_metadata.json"
@@ -127,7 +126,7 @@ def build_metadata_override_for_evolved(baseline_id, baseline_fasta_path, crrna_
     """Build metadata override dict for evolved variants not in variant_domain_metadata.json."""
     with open(baseline_fasta_path, 'r') as f:
         seq = "".join([l.strip() for l in f if not l.startswith(">")])
-    motif = re.compile(r'R.{4,6}H')
+    motif = re.compile(r'R.{3,6}H')  # includes Cas13a (REFYH)
     matches = list(motif.finditer(seq))
     if len(matches) < 2:
         return None
@@ -175,7 +174,7 @@ def get_catalytic_histidine_indices(fasta_path):
             seq_lines.append(line)
         seq = "".join(seq_lines)
 
-    motif = re.compile(r'R.{4,6}H')
+    motif = re.compile(r'R.{3,6}H')  # includes Cas13a (REFYH)
     matches = list(motif.finditer(seq))
     if len(matches) < 2:
         return None, None
@@ -194,7 +193,7 @@ def extract_mutations(baseline_id, variant_fasta, baseline_fasta_path=None):
         base_json = os.path.join(BASE_JSON_DIR, f"{baseline_id}.json")
         with open(base_json, 'r') as f:
             data = json.load(f)
-        baseline_seq = data[0]["sequences"][0]["protein"]["sequence"]
+        baseline_seq = data[0]["sequences"][0].get("proteinChain", data[0]["sequences"][0].get("protein", {}))["sequence"]
 
     with open(variant_fasta, 'r') as f:
         v_seq = "".join([l.strip() for l in f.readlines() if not l.startswith(">")])
@@ -237,23 +236,25 @@ def main_evolution_loop():
     baseline = lineage_queue.pop(0)
     baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id = baseline
 
-    # Resolve Phase 1 PDB path
-    pdbs = glob(f"{PHASE1_PDB_DIR}/{baseline_id}_pred/*.pdb")
-    if not pdbs:
-        log.warning(f"No Phase 1 PDB found for {baseline_id}. Trying next lineage...")
+    # Resolve Phase 1 structure path (prefer CIF, support nested Protenix outputs)
+    pred_base = os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred")
+    structures = find_structure_files(pred_base)
+    if not structures:
+        log.warning(f"No Phase 1 structure (CIF/PDB) found for {baseline_id}. Trying next lineage...")
         while lineage_queue:
             baseline = lineage_queue.pop(0)
             baseline_id, _, _, crrna_lookup_id = baseline
-            pdbs = glob(f"{PHASE1_PDB_DIR}/{baseline_id}_pred/*.pdb")
-            if pdbs:
-                baseline_pdb_path = pdbs[0]
+            pred_base = os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred")
+            structures = find_structure_files(pred_base)
+            if structures:
+                baseline_pdb_path = structures[0]
                 baseline = (baseline_id, baseline_pdb_path, None, crrna_lookup_id)
                 break
         else:
-            print("No valid Phase 1 PDBs found. Exiting.")
+            print("No valid Phase 1 structures found. Exiting.")
             return
     else:
-        baseline_pdb_path = pdbs[0]
+        baseline_pdb_path = structures[0]
         baseline = (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
 
     generation_counter = 0
@@ -275,9 +276,9 @@ def main_evolution_loop():
                 if lineage_queue:
                     baseline = lineage_queue.pop(0)
                     baseline_id, _, _, crrna_lookup_id = baseline
-                    pdbs = glob(f"{PHASE1_PDB_DIR}/{baseline_id}_pred/*.pdb")
-                    if pdbs:
-                        baseline = (baseline_id, pdbs[0], None, crrna_lookup_id)
+                    structures = find_structure_files(os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred"))
+                    if structures:
+                        baseline = (baseline_id, structures[0], None, crrna_lookup_id)
                     continue
 
         # --- SCRIPT 3: Generate Variants (Guided by the Gym) ---
@@ -296,9 +297,9 @@ def main_evolution_loop():
             if lineage_queue:
                 baseline = lineage_queue.pop(0)
                 baseline_id, _, _, crrna_lookup_id = baseline
-                pdbs = glob(f"{PHASE1_PDB_DIR}/{baseline_id}_pred/*.pdb")
-                if pdbs:
-                    baseline = (baseline_id, pdbs[0], None, crrna_lookup_id)
+                structures = find_structure_files(os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred"))
+                if structures:
+                    baseline = (baseline_id, structures[0], None, crrna_lookup_id)
             continue
 
         if SLEEP_AFTER_PXDESIGN > 0:
@@ -310,9 +311,9 @@ def main_evolution_loop():
             if lineage_queue:
                 baseline = lineage_queue.pop(0)
                 baseline_id, _, _, crrna_lookup_id = baseline
-                pdbs = glob(f"{PHASE1_PDB_DIR}/{baseline_id}_pred/*.pdb")
-                if pdbs:
-                    baseline = (baseline_id, pdbs[0], None, crrna_lookup_id)
+                structures = find_structure_files(os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred"))
+                if structures:
+                    baseline = (baseline_id, structures[0], None, crrna_lookup_id)
             continue
 
         results = []
@@ -407,9 +408,9 @@ def main_evolution_loop():
             if lineage_queue:
                 baseline = lineage_queue.pop(0)
                 baseline_id, _, _, crrna_lookup_id = baseline
-                pdbs = glob(f"{PHASE1_PDB_DIR}/{baseline_id}_pred/*.pdb")
-                if pdbs:
-                    baseline = (baseline_id, pdbs[0], None, crrna_lookup_id)
+                structures = find_structure_files(os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred"))
+                if structures:
+                    baseline = (baseline_id, structures[0], None, crrna_lookup_id)
             continue
 
         best = max(results, key=lambda r: r[2])
@@ -417,39 +418,52 @@ def main_evolution_loop():
 
         log.info(f"Best variant: {best_name} (fitness={best_fitness:.1f})")
 
+        # Preserve structure format (CIF or PDB) when copying
+        best_structure_ext = os.path.splitext(best_hf_pdb)[1] if best_hf_pdb else ".pdb"
+        best_structure_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex{best_structure_ext}")
+
         if best_iptm >= MIN_IPTM_SCORE and best_af2_ig >= MIN_AF2_IG_SCORE and best_on <= MAX_ON_DISTANCE:
             log.info(f"ELITE TERNARY SWITCH FOUND! ipTM: {best_iptm:.3f} | AF2-IG: {best_af2_ig:.3f} | ON-Dist: {best_on:.1f}A")
             os.makedirs(FINAL_HITS_DIR, exist_ok=True)
             shutil.copy(best_fasta, os.path.join(FINAL_HITS_DIR, f"{best_name}_optimal.fasta"))
             if best_hf_pdb:
-                shutil.copy(best_hf_pdb, os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex.pdb"))
+                shutil.copy(best_hf_pdb, best_structure_dest)
             save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
 
         # Use best variant as next baseline (even if not elite)
         os.makedirs(FINAL_HITS_DIR, exist_ok=True)
         best_fasta_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_optimal.fasta")
-        best_pdb_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex.pdb")
+
+        def _find_existing_structure(final_dir, name):
+            base = os.path.join(final_dir, f"{name}_ternary_complex")
+            for ext in (".cif", ".pdb"):
+                p = base + ext
+                if os.path.exists(p):
+                    return p
+            return None
 
         if best_hf_pdb:
             shutil.copy(best_fasta, best_fasta_dest)
-            shutil.copy(best_hf_pdb, best_pdb_dest)
+            shutil.copy(best_hf_pdb, best_structure_dest)
             save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
-            baseline = (best_name, best_pdb_dest, best_fasta_dest, crrna_lookup_id)
-        elif os.path.exists(best_pdb_dest):
+            baseline = (best_name, best_structure_dest, best_fasta_dest, crrna_lookup_id)
+        elif (existing_structure := _find_existing_structure(FINAL_HITS_DIR, best_name)):
             shutil.copy(best_fasta, best_fasta_dest)
             save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
-            baseline = (best_name, best_pdb_dest, best_fasta_dest, crrna_lookup_id)
+            baseline = (best_name, existing_structure, best_fasta_dest, crrna_lookup_id)
         else:
             on_json = os.path.join(FAST_EVAL_DIR, f"{best_name}_ON.json")
             if os.path.exists(on_json):
                 try:
-                    hf_pdb, _ = run_protenix_inference(
+                    hf_structure, _ = run_protenix_inference(
                         on_json, HIGH_FIDELITY_DIR, model_tier="base", seqres_db_path=SEQRES_DB_PATH
                     )
                     shutil.copy(best_fasta, best_fasta_dest)
-                    shutil.copy(hf_pdb, best_pdb_dest)
+                    ext = os.path.splitext(hf_structure)[1] or ".pdb"
+                    hf_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex{ext}")
+                    shutil.copy(hf_structure, hf_dest)
                     save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
-                    baseline = (best_name, best_pdb_dest, best_fasta_dest, crrna_lookup_id)
+                    baseline = (best_name, hf_dest, best_fasta_dest, crrna_lookup_id)
                 except Exception as e:
                     print(f"  Could not get HF PDB for best variant: {e}. Reusing current baseline.")
                     baseline = (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)

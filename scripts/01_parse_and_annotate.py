@@ -124,7 +124,8 @@ def identify_hepn_domains(conn):
     # Select only sequences that haven't been successfully processed yet
     cursor.execute("SELECT sequence_id, sequence FROM variants WHERE sequence IS NOT NULL")
     
-    motif = re.compile(r'R.{4,6}H')
+    # R.{3,6}H: includes Cas13a (REFYH) while keeping Cas13e-like (R.{4,6}H)
+    motif = re.compile(r'R.{3,6}H')
     processed = 0
     
     while True:
@@ -189,13 +190,14 @@ def generate_protenix_jsons(conn):
             dr_rna = dna_repeat.replace("T", "U").replace("t", "u")
             crrna_seq = dr_rna + DUMMY_SPACER_RNA
             
+            # Protenix expects proteinChain/rnaSequence (not protein/rna)
             protenix_payload = [
                 {
                     "name": seq_id,
                     "sequences": [
-                        {"protein": {"id": "A", "sequence": protein_seq}},
-                        {"rna": {"id": "B", "sequence": crrna_seq}},
-                        {"rna": {"id": "C", "sequence": DUMMY_TARGET_RNA}}
+                        {"proteinChain": {"sequence": protein_seq, "count": 1}},
+                        {"rnaSequence": {"sequence": crrna_seq, "count": 1}},
+                        {"rnaSequence": {"sequence": DUMMY_TARGET_RNA, "count": 1}}
                     ]
                 }
             ]

@@ -77,12 +77,13 @@ def generate_offtarget_json(variant_fasta, crrna_lookup_id, metadata_path, off_t
     if not baseline_data:
         raise ValueError(f"crRNA lookup ID {crrna_lookup_id} not found in metadata.")
     crrna_seq = baseline_data["crRNA_repeat_used"] + DUMMY_SPACER_RNA
+    # Protenix expects proteinChain/rnaSequence (not protein/rna)
     payload = [{
         "name": f"{variant_id}_offtarget_{suffix}",
         "sequences": [
-            {"protein": {"id": "A", "sequence": protein_seq}},
-            {"rna": {"id": "B", "sequence": crrna_seq}},
-            {"rna": {"id": "C", "sequence": off_target_rna}}
+            {"proteinChain": {"sequence": protein_seq, "count": 1}},
+            {"rnaSequence": {"sequence": crrna_seq, "count": 1}},
+            {"rnaSequence": {"sequence": off_target_rna, "count": 1}}
         ]
     }]
     path = os.path.join(out_dir, f"{variant_id}_offtarget_{suffix}.json")
@@ -119,11 +120,12 @@ def generate_evaluation_jsons(variant_fasta, baseline_id, metadata_path, out_dir
     crrna_seq = baseline_data["crRNA_repeat_used"] + DUMMY_SPACER_RNA
     
     # 3. Construct OFF State Payload (Dormant - No Target)
+    # Protenix expects proteinChain/rnaSequence (not protein/rna)
     off_payload = [{
         "name": f"{variant_id}_OFF",
         "sequences": [
-            {"protein": {"id": "A", "sequence": protein_seq}},
-            {"rna": {"id": "B", "sequence": crrna_seq}}
+            {"proteinChain": {"sequence": protein_seq, "count": 1}},
+            {"rnaSequence": {"sequence": crrna_seq, "count": 1}}
         ]
     }]
     
@@ -131,9 +133,9 @@ def generate_evaluation_jsons(variant_fasta, baseline_id, metadata_path, out_dir
     on_payload = [{
         "name": f"{variant_id}_ON",
         "sequences": [
-            {"protein": {"id": "A", "sequence": protein_seq}},
-            {"rna": {"id": "B", "sequence": crrna_seq}},
-            {"rna": {"id": "C", "sequence": DUMMY_TARGET_RNA}}
+            {"proteinChain": {"sequence": protein_seq, "count": 1}},
+            {"rnaSequence": {"sequence": crrna_seq, "count": 1}},
+            {"rnaSequence": {"sequence": DUMMY_TARGET_RNA, "count": 1}}
         ]
     }]
     
@@ -150,62 +152,64 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
     Executes the Protenix CLI. Logs when starting long-running inference.
     model_tier="mini" for Script 4 (Fast Filter)
     model_tier="base" for Script 5 (High Fidelity Oracle)
-    seqres_db_path: if set and path exists, runs inputprep first for better MSA quality (matches Phase 1).
+    seqres_db_path: if set and path exists, runs protenix msa first for better MSA quality.
     """
     os.makedirs(out_dir, exist_ok=True)
     base_name = os.path.basename(json_path).replace(".json", "")
     tier_label = "mini" if model_tier == "mini" else "base"
     log.info(f"Starting Protenix {tier_label} inference for {base_name} (this may take several minutes)...")
     predict_input = json_path
+    use_msa = False
 
-    # Optional: run inputprep first (matches Phase 1 workflow, improves MSA quality)
-    if seqres_db_path and os.path.isdir(seqres_db_path):
-        prep_dir = os.path.join(out_dir, f"{base_name}_prep")
-        os.makedirs(prep_dir, exist_ok=True)
-        prep_cmd = [
-            "protenix", "inputprep",
-            "--input", json_path,
-            "--out_dir", prep_dir,
-            "--seqres_database_path", seqres_db_path,
-        ]
-        try:
-            subprocess.run(prep_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            # Protenix inputprep typically keeps same filename in output dir
-            prep_output = os.path.join(prep_dir, os.path.basename(json_path))
-            if os.path.exists(prep_output):
-                predict_input = prep_output
-        except subprocess.CalledProcessError as e:
-            pass  # Fall back to raw JSON if inputprep fails
+    # Optional: run protenix msa first (improves prediction quality)
+    msa_dir = os.path.join(out_dir, f"{base_name}_msa")
+    os.makedirs(msa_dir, exist_ok=True)
+    try:
+        msa_cmd = ["protenix", "msa", "--input", json_path, "--out_dir", msa_dir]
+        subprocess.run(msa_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # Protenix msa may update JSON in-place or output to out_dir; check for updated JSON
+        msa_output = os.path.join(msa_dir, os.path.basename(json_path))
+        if os.path.exists(msa_output):
+            predict_input = msa_output
+            use_msa = True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass  # Fall back to raw JSON without MSA
 
     if model_tier == "mini":
         model_name = "protenix_mini_default_v0.5.0"
     else:
         model_name = "protenix_base_default_v1.0.0"
 
-    # Construct the RunPod-optimized CLI command
+    # Protenix CLI: predict with --use_msa, --use_default_params (no dtype/enable_cache/trimul)
     cmd = [
         "protenix", "predict",
         "--input", predict_input,
         "--out_dir", out_dir,
         "--model_name", model_name,
-        "--dtype", "bf16",
-        "--enable_cache", "true",
-        "--enable_fusion", "true",
-        "--trimul_kernel", "true"
+        "--use_msa", str(use_msa).lower(),
+        "--use_default_params", "true",
     ]
-    
+
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except subprocess.CalledProcessError as e:
         print(f"Protenix Evaluation Failed for {base_name}:\n{e.stderr}")
         raise
-        
-    # Locate outputs
+
+    # Locate outputs (Protenix outputs .cif; we prefer CIF, fallback to .pdb)
     pred_dir = os.path.join(out_dir, base_name)
-    pdb_files = glob.glob(os.path.join(pred_dir, "*.pdb"))
-    summary_files = glob.glob(os.path.join(pred_dir, "*_summary.json"))
-    
-    if not pdb_files or not summary_files:
+    structure_files = glob.glob(os.path.join(pred_dir, "**/*.cif"), recursive=True)
+    if not structure_files:
+        structure_files = glob.glob(os.path.join(pred_dir, "*.cif"))
+    if not structure_files:
+        structure_files = glob.glob(os.path.join(pred_dir, "**/*.pdb"), recursive=True)
+    if not structure_files:
+        structure_files = glob.glob(os.path.join(pred_dir, "*.pdb"))
+    summary_files = glob.glob(os.path.join(pred_dir, "*_summary*.json"))
+    if not summary_files:
+        summary_files = glob.glob(os.path.join(pred_dir, "**/*_summary*.json"), recursive=True)
+
+    if not structure_files or not summary_files:
         raise FileNotFoundError(f"Protenix outputs not generated for {base_name}")
-        
-    return pdb_files[0], summary_files[0]
+
+    return structure_files[0], summary_files[0]

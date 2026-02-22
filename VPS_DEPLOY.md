@@ -59,8 +59,8 @@ cd /path/to/CASCADE
 Verify:
 
 ```bash
-protenix pred -h   # Protenix
-pxdesign --help    # PXDesign (if installed)
+protenix predict -h   # Protenix
+pxdesign --help       # PXDesign (if installed)
 ```
 
 ---
@@ -83,17 +83,28 @@ All commands should be run from the project root with the venv activated.
 ### Phase 1: Parse & Screen (CPU + GPU)
 
 ```bash
-source .venv/bin/activate
+source .venv/bin/activate   # or: conda activate pxdesign
 cd scripts
 
 # Step 1a: Parse FASTAs, build DB, generate JSONs (CPU only)
 python 01_parse_and_annotate.py
 
-# Step 1b: Phase 1 screening - Protenix-mini on each hit (GPU)
+# Step 1b: Phase 1 screening - Protenix-mini on each hit (GPU, no MSA for speed)
+chmod +x 02_run_screening.sh
 ./02_run_screening.sh
 ```
 
-Phase 1 can take 5–30+ minutes per JSON depending on GPU.
+Phase 1 uses `SKIP_MSA=1` by default (~5–10 min per hit). Set `SKIP_MSA=0` to use MSA (slower: ~30–50 min per hit via remote server).
+
+**Option 4 – Two-Phase MSA:** Screen all hits fast (no MSA), then re-run top N with MSA for higher-quality seeds:
+
+```bash
+# After 02_run_screening.sh completes, re-run top 5 baselines WITH MSA (~30–50 min each)
+chmod +x 02b_rerun_top_with_msa.sh
+./02b_rerun_top_with_msa.sh 5   # or: ./02b_rerun_top_with_msa.sh 10
+```
+
+Evolution then uses the MSA-enhanced PDBs for those top baselines.
 
 ### Phase 2: Evolution Loop (GPU)
 
@@ -124,6 +135,7 @@ Or run phases separately:
 ```bash
 python 01_parse_and_annotate.py 2>&1 | tee ../logs/phase1_parse.log
 ./02_run_screening.sh 2>&1 | tee ../logs/phase1_screen.log
+# Optional: ./02b_rerun_top_with_msa.sh 5 2>&1 | tee ../logs/phase1b_msa_rerun.log
 python evolution_orchestrator.py 2>&1 | tee ../logs/phase2_evolution.log
 ```
 
@@ -156,11 +168,15 @@ python evolution_orchestrator.py 2>&1 | tee ../logs/phase2_evolution.log
 ```bash
 # One-time setup
 ./scripts/setup_vps.sh
-source .venv/bin/activate
+source .venv/bin/activate   # or: conda activate pxdesign
 
-# Full run
+# Full run (no MSA for speed)
 cd scripts
 python 01_parse_and_annotate.py
 ./02_run_screening.sh
+
+# Optional: Re-run top 5 with MSA for higher-quality seeds (~2.5–4 h)
+./02b_rerun_top_with_msa.sh 5
+
 python evolution_orchestrator.py
 ```

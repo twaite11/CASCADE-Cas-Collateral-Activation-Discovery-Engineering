@@ -40,22 +40,33 @@ def generate_frozen_rec_config(metadata_db_path, variant_id, out_dir, metadata_o
         
     return freeze_path
 
-def run_pxdesign_generation(baseline_pdb, variant_id, metadata_path, bias_json_path, output_dir, variant_count=50, metadata_override=None):
+def run_pxdesign_generation(baseline_structure, variant_id, metadata_path, bias_json_path, output_dir, variant_count=50, metadata_override=None):
     """
     Executes the physical PXDesign binary on the RunPod cluster, applying 
     both the structural freeze constraints and the Active Learning bias matrix.
+    Accepts .cif or .pdb; converts CIF to PDB only when PXDesign requires it.
     metadata_override: optional dict for evolved variants not in metadata file.
     """
     log.info(f"[PXDesign] Generating {variant_count} mutations for {variant_id} (this may take 5-15 min)...")
     os.makedirs(output_dir, exist_ok=True)
-    
+
+    # PXDesign CLI uses --input_pdb; convert CIF to PDB when needed
+    ext = os.path.splitext(baseline_structure)[1].lower()
+    if ext == ".cif":
+        from utils.pdb_kinematics import cif_to_pdb
+        pdb_path = os.path.join(output_dir, f"{variant_id}_input_converted.pdb")
+        cif_to_pdb(baseline_structure, pdb_path)
+        input_path = pdb_path
+    else:
+        input_path = baseline_structure
+
     # 1. Generate the dynamic freeze config to protect the crRNA pocket
     freeze_json_path = generate_frozen_rec_config(metadata_path, variant_id, output_dir, metadata_override)
-    
+
     # 2. Construct the production CLI command
     cmd = [
         "pxdesign",
-        "--input_pdb", baseline_pdb,
+        "--input_pdb", input_path,
         "--freeze_json", freeze_json_path,
         "--num_outputs", str(variant_count),
         "--out_dir", output_dir,

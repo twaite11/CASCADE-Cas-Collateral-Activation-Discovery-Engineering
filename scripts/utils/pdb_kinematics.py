@@ -1,12 +1,37 @@
 import json
 import os
+import glob
 import numpy as np
-from Bio.PDB import PDBParser
+from Bio.PDB import PDBParser, MMCIFParser, PDBIO
 import warnings
 from Bio import BiopythonWarning
 
 # Suppress minor PDB format warnings for cleaner RunPod logs
 warnings.simplefilter('ignore', BiopythonWarning)
+
+
+def find_structure_files(base_dir):
+    """
+    Search recursively for structure files, preferring CIF over PDB.
+    Returns list of paths (CIF first if any, else PDB).
+    """
+    if not base_dir or not os.path.isdir(base_dir):
+        return []
+    cifs = sorted(glob.glob(os.path.join(base_dir, "**", "*.cif"), recursive=True))
+    if cifs:
+        return cifs
+    pdbs = sorted(glob.glob(os.path.join(base_dir, "**", "*.pdb"), recursive=True))
+    return pdbs
+
+
+def _load_structure(path):
+    """Load a structure from PDB or CIF; returns Biopython Structure object."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".cif":
+        parser = MMCIFParser(QUIET=True)
+    else:
+        parser = PDBParser(QUIET=True)
+    return parser.get_structure("structure", path)
 
 def extract_protenix_scores(summary_json_path):
     """
@@ -33,16 +58,16 @@ def extract_protenix_scores(summary_json_path):
         "af2_ig": af2_ig
     }
 
-def calculate_hepn_shift(pdb_path, hepn1_his_idx, hepn2_his_idx, protein_chain_id='A'):
+def calculate_hepn_shift(structure_path, hepn1_his_idx, hepn2_his_idx, protein_chain_id='A'):
     """
-    Parses a PDB file and calculates the 3D Euclidean distance (in Angstroms) 
+    Parses a PDB or CIF file and calculates the 3D Euclidean distance (in Angstroms)
     between the Alpha-Carbons of the two catalytic Histidines in the HEPN domains.
+    Accepts .pdb or .cif; uses Biopython MMCIFParser for CIF.
     """
-    if not os.path.exists(pdb_path):
-        raise FileNotFoundError(f"PDB file not found: {pdb_path}")
+    if not os.path.exists(structure_path):
+        raise FileNotFoundError(f"Structure file not found: {structure_path}")
 
-    parser = PDBParser(QUIET=True)
-    structure = parser.get_structure("cas13_complex", pdb_path)
+    structure = _load_structure(structure_path)
     
     try:
         # Navigate the PDB hierarchy: Structure -> Model (0) -> Chain -> Residue -> Atom
@@ -62,4 +87,20 @@ def calculate_hepn_shift(pdb_path, hepn1_his_idx, hepn2_his_idx, protein_chain_i
         return float(distance_angstroms)
         
     except KeyError as e:
-        raise ValueError(f"Could not find required residue or chain in PDB {pdb_path}. Error: {e}")
+        raise ValueError(f"Could not find required residue or chain in structure {structure_path}. Error: {e}")
+
+
+def cif_to_pdb(cif_path, pdb_path=None):
+    """
+    Convert a CIF file to PDB using Biopython.
+    Returns path to the written PDB file.
+    """
+    if not os.path.exists(cif_path):
+        raise FileNotFoundError(f"CIF file not found: {cif_path}")
+    if pdb_path is None:
+        pdb_path = cif_path.replace(".cif", ".pdb").replace(".CIF", ".pdb")
+    structure = _load_structure(cif_path)
+    io = PDBIO()
+    io.set_structure(structure)
+    io.save(pdb_path)
+    return pdb_path
