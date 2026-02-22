@@ -1,12 +1,14 @@
 #!/bin/bash
 # --- Option 4: Two-Phase MSA Workflow ---
-# After Phase 1 screening (no MSA), re-run top N baselines WITH MSA for higher-quality PDBs.
+# After Phase 1 screening (no MSA), re-run top N baselines WITH MSA for higher-quality structures.
+# Baselines are ranked by Phase 1 Protenix ipTM score (from *_summary*.json); best first.
 # Evolution then uses these MSA-enhanced structures as seeds.
 #
 # Usage: ./02b_rerun_top_with_msa.sh [N]
 #   N = number of top baselines to re-run (default: 5, matches NUM_INITIAL_LINEAGES)
 #
 # Run AFTER 02_run_screening.sh completes. Expect ~30-50 min per baseline (remote MSA server).
+# Ranks all baselines by ipTM. Validation filtering happens before evolution only.
 
 log_ts() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
@@ -20,29 +22,61 @@ if [ ! -f "$METADATA_FILE" ]; then
     exit 1
 fi
 
-# Collect baseline IDs that have Phase 1 PDBs (same order as evolution_orchestrator)
+# Discover *_summary*.json under Phase 1, load ipTM scores, sort by score (best first), take top N
+log_ts "Ranking baselines by Phase 1 ipTM score..."
 candidates=()
 while IFS= read -r bid; do
     [ -z "$bid" ] && continue
-    if [ -d "$OUTPUT_DIR/${bid}_pred" ] && [ -n "$(find "$OUTPUT_DIR/${bid}_pred" -type f \( -name '*.pdb' -o -name '*.cif' \) 2>/dev/null | head -1)" ]; then
-        candidates+=("$bid")
-    fi
+    candidates+=("$bid")
 done < <(python3 -c "
 import json
-with open('$METADATA_FILE') as f:
+import os
+import sys
+import glob
+
+output_dir = os.path.abspath('$OUTPUT_DIR')
+metadata_file = '$METADATA_FILE'
+top_n = int('$TOP_N')
+
+with open(metadata_file) as f:
     meta = json.load(f)
-for k in list(meta.keys()):
-    print(k)
+
+summaries = glob.glob(os.path.join(output_dir, '**', '*_summary*.json'), recursive=True)
+baseline_scores = {}
+
+for path in summaries:
+    try:
+        rel = os.path.relpath(path, output_dir)
+    except ValueError:
+        continue
+    parts = rel.replace(chr(92), '/').split('/')
+    if not parts or not parts[0].endswith('_pred'):
+        continue
+    bid = parts[0][:-5]
+    if bid not in meta:
+        continue
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        score = float(data.get('iptm', data.get('ranking_score', 0.0)))
+        if bid not in baseline_scores or score > baseline_scores[bid]:
+            baseline_scores[bid] = score
+    except (json.JSONDecodeError, KeyError, ValueError):
+        continue
+
+sorted_bids = sorted(baseline_scores.keys(), key=lambda b: baseline_scores[b], reverse=True)
+for i, bid in enumerate(sorted_bids[:top_n], 1):
+    print(f'  #{i} {bid} (ipTM={baseline_scores[bid]:.3f})', file=sys.stderr)
+    print(bid)
 ")
 
 if [ ${#candidates[@]} -eq 0 ]; then
-    log_ts "ERROR: No Phase 1 PDBs found. Run 02_run_screening.sh first."
+    log_ts "ERROR: No Phase 1 summary JSONs found. Run 02_run_screening.sh first."
     exit 1
 fi
 
-# Take top N
-count=$(( TOP_N < ${#candidates[@]} ? TOP_N : ${#candidates[@]} ))
-log_ts "Re-running top $count of ${#candidates[@]} baselines with MSA (~30-50 min each)..."
+count=${#candidates[@]}
+log_ts "Re-running top $count baseline(s) by ipTM score with MSA (~30-50 min each)..."
 
 for (( i=0; i<count; i++ )); do
     bid="${candidates[$i]}"

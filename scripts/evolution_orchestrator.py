@@ -44,8 +44,24 @@ FAST_EVAL_DIR = "../outputs/fast_eval"
 HIGH_FIDELITY_DIR = "../outputs/high_fidelity_scoring"
 FINAL_HITS_DIR = "../outputs/optimized_switches"
 GYM_DIR = "../outputs/rl_gym_data"
+RL_TRAINING_DATASET = os.path.join(GYM_DIR, "rl_training_dataset.jsonl")
+VALIDATED_IDS_FILE = "../outputs/validated_baseline_ids.txt"  # From validate_crispr_repeats.py; restricts lineage to validated repeats
 # Optional: set to path to databases/ for Protenix inputprep (improves MSA quality)
 SEQRES_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "databases")
+
+
+def _load_validated_baseline_ids():
+    """Load baseline IDs that passed CRISPR repeat validation. Returns None if file missing (use all)."""
+    path = os.path.join(os.path.dirname(__file__), VALIDATED_IDS_FILE)
+    if not os.path.isfile(path):
+        return None
+    ids = set()
+    with open(path) as f:
+        for line in f:
+            bid = line.strip()
+            if bid:
+                ids.add(bid)
+    return ids
 
 # --- Biophysical Thresholds ---
 # The R(phi)X3H motifs must be far apart in the OFF state, and snap together in the ON state.
@@ -121,6 +137,64 @@ class EvolutionGym:
         with open(bias_file, 'w') as f:
             json.dump(bias_matrix, f, indent=2)
         return bias_file
+
+
+def _read_sequence_from_fasta(fasta_path):
+    """Read first sequence from FASTA file."""
+    if not fasta_path or not os.path.exists(fasta_path):
+        return ""
+    with open(fasta_path) as f:
+        return "".join(l.strip() for l in f if not l.startswith(">"))
+
+
+def _read_baseline_sequence(baseline_id, baseline_fasta_path):
+    """Get baseline sequence from FASTA or base JSON."""
+    if baseline_fasta_path and os.path.exists(baseline_fasta_path):
+        return _read_sequence_from_fasta(baseline_fasta_path)
+    base_json = os.path.join(BASE_JSON_DIR, f"{baseline_id}.json")
+    if os.path.exists(base_json):
+        with open(base_json) as f:
+            data = json.load(f)
+        ent = data[0]["sequences"][0]
+        prot = ent.get("proteinChain", ent.get("protein", {}))
+        return prot.get("sequence", "")
+    return ""
+
+
+def save_rl_training_record(
+    variant_id, variant_fasta, baseline_id, baseline_fasta_path, crrna_lookup_id,
+    generation, mutations, fitness, off_dist, on_dist, iptm, af2_ig,
+    structure_path, offtarget_by_mismatch, is_elite,
+):
+    """
+    Append a single variant evaluation to rl_training_dataset.jsonl.
+    Format is designed for DRAKES/ProteinMPNN post-training: (structure, sequence, reward).
+    After post-training MPNN on this data, the fine-tuned model can be plugged back
+    into the CASCADE pipeline to bias future designs toward better Cas13 switches.
+    """
+    os.makedirs(GYM_DIR, exist_ok=True)
+    seq = _read_sequence_from_fasta(variant_fasta)
+    baseline_seq = _read_baseline_sequence(baseline_id, baseline_fasta_path)
+    record = {
+        "variant_id": variant_id,
+        "generation": generation,
+        "baseline_id": baseline_id,
+        "crrna_lookup_id": crrna_lookup_id,
+        "sequence": seq,
+        "baseline_sequence": baseline_seq,
+        "mutations": mutations,
+        "fitness": float(fitness),
+        "off_dist_A": float(off_dist),
+        "on_dist_A": float(on_dist),
+        "iptm": float(iptm),
+        "af2_ig": float(af2_ig),
+        "structure_path": structure_path,
+        "offtarget_by_mismatch": offtarget_by_mismatch or {},
+        "is_elite": bool(is_elite),
+    }
+    with open(RL_TRAINING_DATASET, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
 
 def build_metadata_override_for_evolved(baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata):
     """Build metadata override dict for evolved variants not in variant_domain_metadata.json."""
@@ -218,16 +292,26 @@ def main_evolution_loop():
     log.info("Initializing SwitchBlade Active Learning Evolution Loop...")
     os.makedirs(FAST_EVAL_DIR, exist_ok=True)
     os.makedirs(HIGH_FIDELITY_DIR, exist_ok=True)
+    os.makedirs(GYM_DIR, exist_ok=True)
+    log.info(f"RL training data will be appended to {RL_TRAINING_DATASET} (see RL_TRAINING_FORMAT.md)")
 
     gym = EvolutionGym()
 
     with open(METADATA_FILE, 'r') as f:
         domain_metadata = json.load(f)
 
+    baseline_ids = list(domain_metadata.keys())
+    validated = _load_validated_baseline_ids()
+    if validated is not None:
+        baseline_ids = [b for b in baseline_ids if b in validated]
+        log.info(f"Restricting to {len(baseline_ids)} baselines with validated CRISPR repeats (from {VALIDATED_IDS_FILE})")
+    else:
+        log.info(f"Using all {len(baseline_ids)} baselines (no {VALIDATED_IDS_FILE})")
+
     # Baseline object: (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
     lineage_queue = [
         (bid, None, None, bid)  # Phase 1: fasta_path=None, crrna_lookup_id=baseline_id
-        for bid in list(domain_metadata.keys())[:NUM_INITIAL_LINEAGES]
+        for bid in baseline_ids[:NUM_INITIAL_LINEAGES]
     ]
     if not lineage_queue:
         log.warning("No baselines in metadata. Exiting.")
@@ -284,13 +368,15 @@ def main_evolution_loop():
         # --- SCRIPT 3: Generate Variants (Guided by the Gym) ---
         try:
             new_variants_fastas = pxdesign_wrapper.run_pxdesign_generation(
-                baseline_pdb=baseline_pdb_path,
+                baseline_structure=baseline_pdb_path,
                 variant_id=baseline_id,
                 metadata_path=METADATA_FILE,
                 bias_json_path=bias_file,
                 output_dir=os.path.join(GENERATION_DIR, f"gen_{generation_counter}"),
-                variant_count=25,
+                variant_count=2,
                 metadata_override=metadata_override,
+                baseline_fasta_path=baseline_fasta_path,
+                base_json_dir=BASE_JSON_DIR,
             )
         except Exception as e:
             log.error(f"PXDesign failed: {e}. Trying next lineage...")
@@ -346,6 +432,11 @@ def main_evolution_loop():
                 log.warning(f"Protenix failed for {variant_name}: {e}")
                 fitness = compute_fitness(0, 999, 0.4, 0, False, None)
                 gym.register_evaluation(variant_name, mutations_made, 0, 999, 0.4, False, None)
+                save_rl_training_record(
+                    variant_name, variant_fasta, baseline_id, baseline_fasta_path, crrna_lookup_id,
+                    generation_counter, mutations_made, fitness, 0, 999, 0.4, 0.0,
+                    None, None, False,
+                )
                 results.append((variant_name, variant_fasta, fitness, 0, 999, 0.4, 0.0, None, None))
                 continue
 
@@ -397,8 +488,18 @@ def main_evolution_loop():
                     print(f"     [Specificity] {mm_str}")
 
             fitness = compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None)
+            if "fallback" in variant_name:
+                fitness -= FALLBACK_FITNESS_PENALTY
+                log.info(f"Fallback variant {variant_name}: applying penalty ({FALLBACK_FITNESS_PENALTY})")
             gym.register_evaluation(
                 variant_name, mutations_made, off_dist, true_on_dist, iptm, has_potential, offtarget_by_mismatch or None
+            )
+            struct_path = hf_pdb_path if hf_pdb_path else on_pdb
+            is_elite = (iptm >= MIN_IPTM_SCORE and af2_ig >= MIN_AF2_IG_SCORE and true_on_dist <= MAX_ON_DISTANCE)
+            save_rl_training_record(
+                variant_name, variant_fasta, baseline_id, baseline_fasta_path, crrna_lookup_id,
+                generation_counter, mutations_made, fitness, off_dist, true_on_dist, iptm, af2_ig,
+                struct_path, offtarget_by_mismatch or None, is_elite,
             )
             results.append((variant_name, variant_fasta, fitness, off_dist, true_on_dist, iptm, af2_ig, hf_pdb_path, offtarget_by_mismatch))
             gc.collect()

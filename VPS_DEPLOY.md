@@ -148,7 +148,7 @@ python evolution_orchestrator.py 2>&1 | tee ../logs/phase2_evolution.log
 | `outputs/phase1_screening/` | Baseline PDBs from screening |
 | `outputs/generation_queue/` | PXDesign variant FASTAs |
 | `outputs/optimized_switches/` | Elite Cas13-like sequences & PDBs |
-| `outputs/rl_gym_data/` | MPNN bias matrices |
+| `outputs/rl_gym_data/` | MPNN bias matrices, `rl_training_dataset.jsonl` for post-training (see RL_TRAINING_FORMAT.md) |
 
 ---
 

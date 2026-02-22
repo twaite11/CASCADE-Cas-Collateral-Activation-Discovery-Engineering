@@ -1,0 +1,4 @@
+{"location":"test_hepn_stitch.py","message":"test full layout post-fix","data":{"hepn1_len":41,"hepn2_len":61,"full_len":480},"hypothesisId":"H2","runId":"post-fix"}
+{"location":"hepn_structural_stitch.py","message":"slice params","data":{"hepn1_start":360,"hepn1_end":400,"hepn2_start":420,"hepn2_end":480,"full_len":480,"hepn1_slice_len":41,"hepn2_slice_len":61},"hypothesisId":"H1,H2,H4"}
+{"location":"hepn_structural_stitch.py","message":"extracted seqs","data":{"hepn1_len":41,"hepn1_tail":"YYYYYRZZZH","hepn2_len":61,"hepn2_head":"RAAAABBBBH"},"hypothesisId":"H2,H3"}
+{"location":"hepn_structural_stitch.py","message":"slice params","data":{"hepn1_start":360,"hepn1_end":400,"hepn2_start":420,"hepn2_end":500,"full_len":400,"hepn1_slice_len":41,"hepn2_slice_len":81},"hypothesisId":"H1,H2,H4"}

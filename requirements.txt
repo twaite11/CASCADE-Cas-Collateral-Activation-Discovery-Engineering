@@ -3,3 +3,5 @@ numpy
 biopython
 protenix
 
+# Optional, for validate_crispr_repeats.py (CRISPR repeat structure validation):
+# ViennaRNA  # pip install ViennaRNA  OR  conda install -c bioconda viennarna

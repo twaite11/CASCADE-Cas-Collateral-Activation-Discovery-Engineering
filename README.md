@@ -71,6 +71,7 @@ Project Structure
 │   ├── setup_vps.sh              # Creates venv, installs deps
 │   ├── run_pipeline.sh           # Full pipeline with logging
 │   ├── 01_parse_and_annotate.py  # Ingests hits, maps domains, builds DB & JSONs
+│   ├── validate_crispr_repeats.py # Optional: run before evolution; outputs validated_baseline_ids.txt
 │   ├── 02_run_screening.sh       # GPU-optimized Phase 1 Protenix-Mini filtering
 │   ├── 03_pxdesign_wrapper.py    # Invokes PXDesign diffusion generation
 │   ├── evolution_orchestrator.py # Active Learning Gym (Master Controller)
@@ -79,6 +80,7 @@ Project Structure
 │       └── pdb_kinematics.py     # 3D Math Engine & Confidence JSON parser
 │
 └── outputs/
+    ├── validated_baseline_ids.txt # From validate_crispr_repeats.py; restricts evolution to validated repeats
     ├── phase1_screening/         # Initial baseline PDBs
     ├── generation_queue/         # FASTA outputs from PXDesign
     ├── fast_eval/                # Mini-model OFF/ON & mismatch structural checks

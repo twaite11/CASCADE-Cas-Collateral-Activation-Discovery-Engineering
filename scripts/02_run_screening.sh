@@ -4,13 +4,13 @@
 # This script executes the high-throughput 'True Cas' test utilizing
 # the lightweight Protenix-Mini model to drastically save on compute costs.
 # Uses protenix msa (when available) for better quality; falls back to raw JSON.
+#
+# Processes all baselines. Validation filtering happens before evolution only.
 
 log_ts() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 JSON_DIR="../jsons"
-# Output under phase1_screening so evolution_orchestrator can find PDBs
 OUTPUT_DIR="../outputs/phase1_screening"
-# Set to "1" to skip MSA (remote server is slow; use raw JSON for faster screening)
 SKIP_MSA="${SKIP_MSA:-1}"
 
 mkdir -p "$OUTPUT_DIR"
