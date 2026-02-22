@@ -178,20 +178,42 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
     if model_tier == "mini":
         model_name = "protenix_mini_default_v0.5.0"
     else:
-        model_name = "protenix_base_default_v1.0.0"
+        # Base tier: prefer v1.0.0; fall back to v0.5.0 if not supported (older Protenix installs)
+        model_name = os.environ.get("PROTENIX_BASE_MODEL", "protenix_base_default_v1.0.0")
+        base_fallback = "protenix_base_default_v0.5.0"
 
-    # Protenix CLI: predict with --use_msa, --use_default_params (no dtype/enable_cache/trimul)
+    # Protenix CLI: 1.0 uses "pred", older versions use "predict". Try pred first.
+    pred_subcmd = "pred"
     cmd = [
-        "protenix", "predict",
-        "--input", predict_input,
-        "--out_dir", out_dir,
-        "--model_name", model_name,
+        "protenix", pred_subcmd,
+        "-i", predict_input,
+        "-o", out_dir,
+        "-n", model_name,
         "--use_msa", str(use_msa).lower(),
         "--use_default_params", "true",
     ]
 
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0 and "No such command" in (result.stderr or ""):
+            # Fallback for older Protenix (predict + long flags)
+            pred_subcmd = "predict"
+            cmd = [
+                "protenix", pred_subcmd,
+                "--input", predict_input,
+                "--out_dir", out_dir,
+                "--model_name", model_name,
+                "--use_msa", str(use_msa).lower(),
+                "--use_default_params", "true",
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0 and model_tier == "base":
+            if "not supported for inference" in (result.stderr or ""):
+                log.warning(f"Base model {model_name} not supported; falling back to {base_fallback}")
+                cmd = [base_fallback if c == model_name else c for c in cmd]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
     except subprocess.CalledProcessError as e:
         print(f"Protenix Evaluation Failed for {base_name}:\n{e.stderr}")
         raise

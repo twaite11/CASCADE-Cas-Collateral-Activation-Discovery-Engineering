@@ -198,8 +198,13 @@ def run_pxdesign_generation(
     yaml_path = _build_pxdesign_yaml(baseline_structure, variant_id, coords, output_dir)
     abs_out = os.path.abspath(output_dir)
 
+    # Support PXDESIGN_CMD for running from a different env (e.g. Protenix 0.5+pxd for PXDesign)
+    # Use full path or "conda run -n pxdesign pxdesign"
+    pxdesign_bin = os.environ.get("PXDESIGN_CMD", "pxdesign")
+    pxdesign_exec = pxdesign_bin.split() if " " in pxdesign_bin else [pxdesign_bin]
+
     cmd = [
-        "pxdesign", "infer",
+        *pxdesign_exec, "infer",
         "-i", yaml_path,
         "-o", abs_out,
         "--N_sample", str(variant_count),

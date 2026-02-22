@@ -50,6 +50,18 @@ VALIDATED_IDS_FILE = "../outputs/validated_baseline_ids.txt"  # From validate_cr
 SEQRES_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "databases")
 
 
+def _get_next_baseline_from_queue(lineage_queue):
+    """Pop from queue until we find one with a valid Phase 1 structure. Returns (baseline, lineage_queue) or (None, lineage_queue) if none found."""
+    while lineage_queue:
+        baseline = lineage_queue.pop(0)
+        baseline_id, _, _, crrna_lookup_id = baseline
+        structures = find_structure_files(os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred"))
+        if structures:
+            return (baseline_id, structures[0], None, crrna_lookup_id), lineage_queue
+        log.warning(f"No Phase 1 structure for {baseline_id}. Skipping to next lineage.")
+    return None, lineage_queue
+
+
 def _load_validated_baseline_ids():
     """Load baseline IDs that passed CRISPR repeat validation. Returns None if file missing (use all)."""
     path = os.path.join(os.path.dirname(__file__), VALIDATED_IDS_FILE)
@@ -73,8 +85,6 @@ MIN_AF2_IG_SCORE = 0.80
 MAX_GENERATIONS = 20
 MISMATCH_COUNTS = (1, 2, 3)  # Test 1-, 2-, 3-mismatch off-targets; activity at higher count penalized harder
 SPECIFICITY_PENALTY_BASE = 0.3  # Base penalty; scaled by mismatch count (3mm > 2mm > 1mm)
-NUM_INITIAL_LINEAGES = 5
-
 # --- Memory / OOM mitigation (seconds; set to 0 to disable) ---
 SLEEP_AFTER_PXDESIGN = 2.0       # Allow CUDA driver to reclaim GPU memory after diffusion
 SLEEP_AFTER_PROTENIX_BASE = 2.0  # Allow reclaim after heavy base-model ternary prediction
@@ -311,268 +321,251 @@ def main_evolution_loop():
     # Baseline object: (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
     lineage_queue = [
         (bid, None, None, bid)  # Phase 1: fasta_path=None, crrna_lookup_id=baseline_id
-        for bid in baseline_ids[:NUM_INITIAL_LINEAGES]
+        for bid in baseline_ids
     ]
+    log.info(f"Queue contains {len(lineage_queue)} lineages ({MAX_GENERATIONS} generations each)")
     if not lineage_queue:
         log.warning("No baselines in metadata. Exiting.")
         return
 
-    baseline = lineage_queue.pop(0)
-    baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id = baseline
-
-    # Resolve Phase 1 structure path (prefer CIF, support nested Protenix outputs)
-    pred_base = os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred")
-    structures = find_structure_files(pred_base)
-    if not structures:
-        log.warning(f"No Phase 1 structure (CIF/PDB) found for {baseline_id}. Trying next lineage...")
-        while lineage_queue:
-            baseline = lineage_queue.pop(0)
-            baseline_id, _, _, crrna_lookup_id = baseline
-            pred_base = os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred")
-            structures = find_structure_files(pred_base)
-            if structures:
-                baseline_pdb_path = structures[0]
-                baseline = (baseline_id, baseline_pdb_path, None, crrna_lookup_id)
-                break
-        else:
-            print("No valid Phase 1 structures found. Exiting.")
-            return
-    else:
-        baseline_pdb_path = structures[0]
-        baseline = (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
+    baseline, lineage_queue = _get_next_baseline_from_queue(lineage_queue)
+    if baseline is None:
+        log.warning("No valid Phase 1 structures found for any baseline. Exiting.")
+        return
 
     generation_counter = 0
     bias_file = None
     mismatch_seqs = generate_mismatch_sequences(TARGET_REGION, mismatch_counts=MISMATCH_COUNTS, num_per_count=1, seed=42)
 
-    for generation_counter in range(1, MAX_GENERATIONS + 1):
-        baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id = baseline
+    while True:
+        for generation_counter in range(1, MAX_GENERATIONS + 1):
+            baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id = baseline
 
-        log.info("=" * 60)
-        log.info(f"Evolution Generation {generation_counter} | Baseline: {baseline_id}")
-        log.info("=" * 60)
+            log.info("=" * 60)
+            log.info(f"Evolution Generation {generation_counter} | Baseline: {baseline_id}")
+            log.info("=" * 60)
 
-        metadata_override = None
-        if baseline_fasta_path:
-            metadata_override = build_metadata_override_for_evolved(baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata)
-            if not metadata_override:
-                log.warning(f"Could not build metadata for evolved baseline {baseline_id}. Skipping.")
-                if lineage_queue:
-                    baseline = lineage_queue.pop(0)
-                    baseline_id, _, _, crrna_lookup_id = baseline
-                    structures = find_structure_files(os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred"))
-                    if structures:
-                        baseline = (baseline_id, structures[0], None, crrna_lookup_id)
-                    continue
+            metadata_override = None
+            if baseline_fasta_path:
+                metadata_override = build_metadata_override_for_evolved(baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata)
+                if not metadata_override:
+                    log.warning(f"Could not build metadata for evolved baseline {baseline_id}. Skipping.")
+                    if lineage_queue:
+                        baseline, lineage_queue = _get_next_baseline_from_queue(lineage_queue)
+                        if baseline is not None:
+                            continue
+                    break
 
-        # --- SCRIPT 3: Generate Variants (Guided by the Gym) ---
-        try:
-            new_variants_fastas = pxdesign_wrapper.run_pxdesign_generation(
-                baseline_structure=baseline_pdb_path,
-                variant_id=baseline_id,
-                metadata_path=METADATA_FILE,
-                bias_json_path=bias_file,
-                output_dir=os.path.join(GENERATION_DIR, f"gen_{generation_counter}"),
-                variant_count=2,
-                metadata_override=metadata_override,
-                baseline_fasta_path=baseline_fasta_path,
-                base_json_dir=BASE_JSON_DIR,
-            )
-        except Exception as e:
-            log.error(f"PXDesign failed: {e}. Trying next lineage...")
-            if lineage_queue:
-                baseline = lineage_queue.pop(0)
-                baseline_id, _, _, crrna_lookup_id = baseline
-                structures = find_structure_files(os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred"))
-                if structures:
-                    baseline = (baseline_id, structures[0], None, crrna_lookup_id)
-            continue
-
-        if SLEEP_AFTER_PXDESIGN > 0:
-            time.sleep(SLEEP_AFTER_PXDESIGN)
-        gc.collect()
-
-        if not new_variants_fastas:
-            print("No variants generated. Trying next lineage...")
-            if lineage_queue:
-                baseline = lineage_queue.pop(0)
-                baseline_id, _, _, crrna_lookup_id = baseline
-                structures = find_structure_files(os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred"))
-                if structures:
-                    baseline = (baseline_id, structures[0], None, crrna_lookup_id)
-            continue
-
-        results = []
-
-        for variant_fasta in new_variants_fastas:
-            mutations_made = extract_mutations(baseline_id, variant_fasta, baseline_fasta_path)
-            variant_name = os.path.basename(variant_fasta).replace(".fasta", "")
-
-            h1_idx, h2_idx = get_catalytic_histidine_indices(variant_fasta)
-            if not h1_idx:
-                continue
-
-            log.info(f"Evaluating variant {variant_name} (Protenix mini OFF/ON - may take 2-5 min each)...")
-            off_json, on_json = generate_evaluation_jsons(
-                variant_fasta, baseline_id, METADATA_FILE, FAST_EVAL_DIR, crrna_lookup_id=crrna_lookup_id
-            )
-
+            # --- SCRIPT 3: Generate Variants (Guided by the Gym) ---
             try:
-                off_pdb, _ = run_protenix_inference(
-                    off_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
+                new_variants_fastas = pxdesign_wrapper.run_pxdesign_generation(
+                    baseline_structure=baseline_pdb_path,
+                    variant_id=baseline_id,
+                    metadata_path=METADATA_FILE,
+                    bias_json_path=bias_file,
+                    output_dir=os.path.join(GENERATION_DIR, f"gen_{generation_counter}"),
+                    variant_count=2,
+                    metadata_override=metadata_override,
+                    baseline_fasta_path=baseline_fasta_path,
+                    base_json_dir=BASE_JSON_DIR,
                 )
-                if SLEEP_AFTER_PROTENIX_MINI > 0:
-                    time.sleep(SLEEP_AFTER_PROTENIX_MINI)
-                on_pdb, _ = run_protenix_inference(
-                    on_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
-                )
-                if SLEEP_AFTER_PROTENIX_MINI > 0:
-                    time.sleep(SLEEP_AFTER_PROTENIX_MINI)
             except Exception as e:
-                log.warning(f"Protenix failed for {variant_name}: {e}")
-                fitness = compute_fitness(0, 999, 0.4, 0, False, None)
-                gym.register_evaluation(variant_name, mutations_made, 0, 999, 0.4, False, None)
-                save_rl_training_record(
-                    variant_name, variant_fasta, baseline_id, baseline_fasta_path, crrna_lookup_id,
-                    generation_counter, mutations_made, fitness, 0, 999, 0.4, 0.0,
-                    None, None, False,
-                )
-                results.append((variant_name, variant_fasta, fitness, 0, 999, 0.4, 0.0, None, None))
-                continue
+                log.error(f"PXDesign failed: {e}. Trying next lineage...")
+                if lineage_queue:
+                    baseline, lineage_queue = _get_next_baseline_from_queue(lineage_queue)
+                    if baseline is not None:
+                        continue
+                break
 
-            off_dist = calculate_hepn_shift(off_pdb, h1_idx, h2_idx)
-            on_dist = calculate_hepn_shift(on_pdb, h1_idx, h2_idx)
-            print(f"     [Filter] OFF: {off_dist:.1f}A | ON: {on_dist:.1f}A")
-            has_potential = (off_dist >= MIN_OFF_DISTANCE) and (on_dist <= MAX_ON_DISTANCE)
-
-            offtarget_by_mismatch = {}
-            hf_pdb_path = None
-            iptm, af2_ig = 0.4, 0.0
-            true_on_dist = on_dist
-
-            if has_potential:
-                log.info("Filter passed. Running Protenix base ternary (may take 10-30 min)...")
-
-                hf_pdb, hf_summary = run_protenix_inference(
-                    on_json, HIGH_FIDELITY_DIR, model_tier="base", seqres_db_path=SEQRES_DB_PATH
-                )
-                if SLEEP_AFTER_PROTENIX_BASE > 0:
-                    time.sleep(SLEEP_AFTER_PROTENIX_BASE)
-                gc.collect()
-                true_on_dist = calculate_hepn_shift(hf_pdb, h1_idx, h2_idx)
-                scores = extract_protenix_scores(hf_summary)
-                iptm, af2_ig = scores["iptm"], scores["af2_ig"]
-                hf_pdb_path = hf_pdb
-
-                # Specificity: 1-, 2-, 3-mismatch off-target tests; activity at higher count penalized harder
-                for i, (ot_rna, n_mismatch) in enumerate(mismatch_seqs):
-                    try:
-                        ot_json = generate_offtarget_json(
-                            variant_fasta, crrna_lookup_id, METADATA_FILE, ot_rna, FAST_EVAL_DIR,
-                            suffix=f"{n_mismatch}mm_{i}"
-                        )
-                        ot_pdb, _ = run_protenix_inference(
-                            ot_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
-                        )
-                        if SLEEP_AFTER_PROTENIX_MINI > 0:
-                            time.sleep(SLEEP_AFTER_PROTENIX_MINI)
-                        ot_dist = calculate_hepn_shift(ot_pdb, h1_idx, h2_idx)
-                        if n_mismatch not in offtarget_by_mismatch:
-                            offtarget_by_mismatch[n_mismatch] = ot_dist
-                        else:
-                            offtarget_by_mismatch[n_mismatch] = min(offtarget_by_mismatch[n_mismatch], ot_dist)
-                    except Exception:
-                        offtarget_by_mismatch[n_mismatch] = MIN_OFF_DISTANCE  # Assume specific on failure
-                if offtarget_by_mismatch:
-                    mm_str = " | ".join(f"{k}mm:{v:.1f}A" for k, v in sorted(offtarget_by_mismatch.items()))
-                    print(f"     [Specificity] {mm_str}")
-
-            fitness = compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None)
-            if "fallback" in variant_name:
-                fitness -= FALLBACK_FITNESS_PENALTY
-                log.info(f"Fallback variant {variant_name}: applying penalty ({FALLBACK_FITNESS_PENALTY})")
-            gym.register_evaluation(
-                variant_name, mutations_made, off_dist, true_on_dist, iptm, has_potential, offtarget_by_mismatch or None
-            )
-            struct_path = hf_pdb_path if hf_pdb_path else on_pdb
-            is_elite = (iptm >= MIN_IPTM_SCORE and af2_ig >= MIN_AF2_IG_SCORE and true_on_dist <= MAX_ON_DISTANCE)
-            save_rl_training_record(
-                variant_name, variant_fasta, baseline_id, baseline_fasta_path, crrna_lookup_id,
-                generation_counter, mutations_made, fitness, off_dist, true_on_dist, iptm, af2_ig,
-                struct_path, offtarget_by_mismatch or None, is_elite,
-            )
-            results.append((variant_name, variant_fasta, fitness, off_dist, true_on_dist, iptm, af2_ig, hf_pdb_path, offtarget_by_mismatch))
+            if SLEEP_AFTER_PXDESIGN > 0:
+                time.sleep(SLEEP_AFTER_PXDESIGN)
             gc.collect()
 
-        if not results:
-            log.warning("No valid results this generation. Trying next lineage...")
-            if lineage_queue:
-                baseline = lineage_queue.pop(0)
-                baseline_id, _, _, crrna_lookup_id = baseline
-                structures = find_structure_files(os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred"))
-                if structures:
-                    baseline = (baseline_id, structures[0], None, crrna_lookup_id)
-            continue
+            if not new_variants_fastas:
+                print("No variants generated. Trying next lineage...")
+                if lineage_queue:
+                    baseline, lineage_queue = _get_next_baseline_from_queue(lineage_queue)
+                    if baseline is not None:
+                        continue
+                break
 
-        best = max(results, key=lambda r: r[2])
-        best_name, best_fasta, best_fitness, best_off, best_on, best_iptm, best_af2_ig, best_hf_pdb, _ = best
+            results = []
 
-        log.info(f"Best variant: {best_name} (fitness={best_fitness:.1f})")
+            for variant_fasta in new_variants_fastas:
+                mutations_made = extract_mutations(baseline_id, variant_fasta, baseline_fasta_path)
+                variant_name = os.path.basename(variant_fasta).replace(".fasta", "")
 
-        # Preserve structure format (CIF or PDB) when copying
-        best_structure_ext = os.path.splitext(best_hf_pdb)[1] if best_hf_pdb else ".pdb"
-        best_structure_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex{best_structure_ext}")
+                h1_idx, h2_idx = get_catalytic_histidine_indices(variant_fasta)
+                if not h1_idx:
+                    continue
 
-        if best_iptm >= MIN_IPTM_SCORE and best_af2_ig >= MIN_AF2_IG_SCORE and best_on <= MAX_ON_DISTANCE:
-            log.info(f"ELITE TERNARY SWITCH FOUND! ipTM: {best_iptm:.3f} | AF2-IG: {best_af2_ig:.3f} | ON-Dist: {best_on:.1f}A")
-            os.makedirs(FINAL_HITS_DIR, exist_ok=True)
-            shutil.copy(best_fasta, os.path.join(FINAL_HITS_DIR, f"{best_name}_optimal.fasta"))
-            if best_hf_pdb:
-                shutil.copy(best_hf_pdb, best_structure_dest)
-            save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
+                log.info(f"Evaluating variant {variant_name} (Protenix mini OFF/ON - may take 2-5 min each)...")
+                off_json, on_json = generate_evaluation_jsons(
+                    variant_fasta, baseline_id, METADATA_FILE, FAST_EVAL_DIR, crrna_lookup_id=crrna_lookup_id
+                )
 
-        # Use best variant as next baseline (even if not elite)
-        os.makedirs(FINAL_HITS_DIR, exist_ok=True)
-        best_fasta_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_optimal.fasta")
-
-        def _find_existing_structure(final_dir, name):
-            base = os.path.join(final_dir, f"{name}_ternary_complex")
-            for ext in (".cif", ".pdb"):
-                p = base + ext
-                if os.path.exists(p):
-                    return p
-            return None
-
-        if best_hf_pdb:
-            shutil.copy(best_fasta, best_fasta_dest)
-            shutil.copy(best_hf_pdb, best_structure_dest)
-            save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
-            baseline = (best_name, best_structure_dest, best_fasta_dest, crrna_lookup_id)
-        elif (existing_structure := _find_existing_structure(FINAL_HITS_DIR, best_name)):
-            shutil.copy(best_fasta, best_fasta_dest)
-            save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
-            baseline = (best_name, existing_structure, best_fasta_dest, crrna_lookup_id)
-        else:
-            on_json = os.path.join(FAST_EVAL_DIR, f"{best_name}_ON.json")
-            if os.path.exists(on_json):
                 try:
-                    hf_structure, _ = run_protenix_inference(
+                    off_pdb, _ = run_protenix_inference(
+                        off_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
+                    )
+                    if SLEEP_AFTER_PROTENIX_MINI > 0:
+                        time.sleep(SLEEP_AFTER_PROTENIX_MINI)
+                    on_pdb, _ = run_protenix_inference(
+                        on_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
+                    )
+                    if SLEEP_AFTER_PROTENIX_MINI > 0:
+                        time.sleep(SLEEP_AFTER_PROTENIX_MINI)
+                except Exception as e:
+                    log.warning(f"Protenix failed for {variant_name}: {e}")
+                    fitness = compute_fitness(0, 999, 0.4, 0, False, None)
+                    gym.register_evaluation(variant_name, mutations_made, 0, 999, 0.4, False, None)
+                    save_rl_training_record(
+                        variant_name, variant_fasta, baseline_id, baseline_fasta_path, crrna_lookup_id,
+                        generation_counter, mutations_made, fitness, 0, 999, 0.4, 0.0,
+                        None, None, False,
+                    )
+                    results.append((variant_name, variant_fasta, fitness, 0, 999, 0.4, 0.0, None, None))
+                    continue
+
+                off_dist = calculate_hepn_shift(off_pdb, h1_idx, h2_idx)
+                on_dist = calculate_hepn_shift(on_pdb, h1_idx, h2_idx)
+                print(f"     [Filter] OFF: {off_dist:.1f}A | ON: {on_dist:.1f}A")
+                has_potential = (off_dist >= MIN_OFF_DISTANCE) and (on_dist <= MAX_ON_DISTANCE)
+
+                offtarget_by_mismatch = {}
+                hf_pdb_path = None
+                iptm, af2_ig = 0.4, 0.0
+                true_on_dist = on_dist
+
+                if has_potential:
+                    log.info("Filter passed. Running Protenix base ternary (may take 10-30 min)...")
+
+                    hf_pdb, hf_summary = run_protenix_inference(
                         on_json, HIGH_FIDELITY_DIR, model_tier="base", seqres_db_path=SEQRES_DB_PATH
                     )
-                    shutil.copy(best_fasta, best_fasta_dest)
-                    ext = os.path.splitext(hf_structure)[1] or ".pdb"
-                    hf_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex{ext}")
-                    shutil.copy(hf_structure, hf_dest)
-                    save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
-                    baseline = (best_name, hf_dest, best_fasta_dest, crrna_lookup_id)
-                except Exception as e:
-                    print(f"  Could not get HF PDB for best variant: {e}. Reusing current baseline.")
-                    baseline = (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
-            else:
-                baseline = (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
+                    if SLEEP_AFTER_PROTENIX_BASE > 0:
+                        time.sleep(SLEEP_AFTER_PROTENIX_BASE)
+                    gc.collect()
+                    true_on_dist = calculate_hepn_shift(hf_pdb, h1_idx, h2_idx)
+                    scores = extract_protenix_scores(hf_summary)
+                    iptm, af2_ig = scores["iptm"], scores["af2_ig"]
+                    hf_pdb_path = hf_pdb
 
-        if gym.mutation_weights:
-            bias_file = gym.generate_mpnn_bias_matrix(generation_counter)
+                    # Specificity: 1-, 2-, 3-mismatch off-target tests; activity at higher count penalized harder
+                    for i, (ot_rna, n_mismatch) in enumerate(mismatch_seqs):
+                        try:
+                            ot_json = generate_offtarget_json(
+                                variant_fasta, crrna_lookup_id, METADATA_FILE, ot_rna, FAST_EVAL_DIR,
+                                suffix=f"{n_mismatch}mm_{i}"
+                            )
+                            ot_pdb, _ = run_protenix_inference(
+                                ot_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
+                            )
+                            if SLEEP_AFTER_PROTENIX_MINI > 0:
+                                time.sleep(SLEEP_AFTER_PROTENIX_MINI)
+                            ot_dist = calculate_hepn_shift(ot_pdb, h1_idx, h2_idx)
+                            if n_mismatch not in offtarget_by_mismatch:
+                                offtarget_by_mismatch[n_mismatch] = ot_dist
+                            else:
+                                offtarget_by_mismatch[n_mismatch] = min(offtarget_by_mismatch[n_mismatch], ot_dist)
+                        except Exception:
+                            offtarget_by_mismatch[n_mismatch] = MIN_OFF_DISTANCE  # Assume specific on failure
+                    if offtarget_by_mismatch:
+                        mm_str = " | ".join(f"{k}mm:{v:.1f}A" for k, v in sorted(offtarget_by_mismatch.items()))
+                        print(f"     [Specificity] {mm_str}")
+
+                fitness = compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None)
+                if "fallback" in variant_name:
+                    fitness -= FALLBACK_FITNESS_PENALTY
+                    log.info(f"Fallback variant {variant_name}: applying penalty ({FALLBACK_FITNESS_PENALTY})")
+                gym.register_evaluation(
+                    variant_name, mutations_made, off_dist, true_on_dist, iptm, has_potential, offtarget_by_mismatch or None
+                )
+                struct_path = hf_pdb_path if hf_pdb_path else on_pdb
+                is_elite = (iptm >= MIN_IPTM_SCORE and af2_ig >= MIN_AF2_IG_SCORE and true_on_dist <= MAX_ON_DISTANCE)
+                save_rl_training_record(
+                    variant_name, variant_fasta, baseline_id, baseline_fasta_path, crrna_lookup_id,
+                    generation_counter, mutations_made, fitness, off_dist, true_on_dist, iptm, af2_ig,
+                    struct_path, offtarget_by_mismatch or None, is_elite,
+                )
+                results.append((variant_name, variant_fasta, fitness, off_dist, true_on_dist, iptm, af2_ig, hf_pdb_path, offtarget_by_mismatch))
+                gc.collect()
+
+            if not results:
+                log.warning("No valid results this generation. Trying next lineage...")
+                if lineage_queue:
+                    baseline, lineage_queue = _get_next_baseline_from_queue(lineage_queue)
+                    if baseline is not None:
+                        continue
+                break
+
+            best = max(results, key=lambda r: r[2])
+            best_name, best_fasta, best_fitness, best_off, best_on, best_iptm, best_af2_ig, best_hf_pdb, _ = best
+
+            log.info(f"Best variant: {best_name} (fitness={best_fitness:.1f})")
+
+            # Preserve structure format (CIF or PDB) when copying
+            best_structure_ext = os.path.splitext(best_hf_pdb)[1] if best_hf_pdb else ".pdb"
+            best_structure_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex{best_structure_ext}")
+
+            if best_iptm >= MIN_IPTM_SCORE and best_af2_ig >= MIN_AF2_IG_SCORE and best_on <= MAX_ON_DISTANCE:
+                log.info(f"ELITE TERNARY SWITCH FOUND! ipTM: {best_iptm:.3f} | AF2-IG: {best_af2_ig:.3f} | ON-Dist: {best_on:.1f}A")
+                os.makedirs(FINAL_HITS_DIR, exist_ok=True)
+                shutil.copy(best_fasta, os.path.join(FINAL_HITS_DIR, f"{best_name}_optimal.fasta"))
+                if best_hf_pdb:
+                    shutil.copy(best_hf_pdb, best_structure_dest)
+                save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
+
+            # Use best variant as next baseline (even if not elite)
+            os.makedirs(FINAL_HITS_DIR, exist_ok=True)
+            best_fasta_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_optimal.fasta")
+
+            def _find_existing_structure(final_dir, name):
+                base = os.path.join(final_dir, f"{name}_ternary_complex")
+                for ext in (".cif", ".pdb"):
+                    p = base + ext
+                    if os.path.exists(p):
+                        return p
+                return None
+
+            if best_hf_pdb:
+                shutil.copy(best_fasta, best_fasta_dest)
+                shutil.copy(best_hf_pdb, best_structure_dest)
+                save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
+                baseline = (best_name, best_structure_dest, best_fasta_dest, crrna_lookup_id)
+            elif (existing_structure := _find_existing_structure(FINAL_HITS_DIR, best_name)):
+                shutil.copy(best_fasta, best_fasta_dest)
+                save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
+                baseline = (best_name, existing_structure, best_fasta_dest, crrna_lookup_id)
+            else:
+                on_json = os.path.join(FAST_EVAL_DIR, f"{best_name}_ON.json")
+                if os.path.exists(on_json):
+                    try:
+                        hf_structure, _ = run_protenix_inference(
+                            on_json, HIGH_FIDELITY_DIR, model_tier="base", seqres_db_path=SEQRES_DB_PATH
+                        )
+                        shutil.copy(best_fasta, best_fasta_dest)
+                        ext = os.path.splitext(hf_structure)[1] or ".pdb"
+                        hf_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex{ext}")
+                        shutil.copy(hf_structure, hf_dest)
+                        save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
+                        baseline = (best_name, hf_dest, best_fasta_dest, crrna_lookup_id)
+                    except Exception as e:
+                        print(f"  Could not get HF PDB for best variant: {e}. Reusing current baseline.")
+                        baseline = (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
+                else:
+                    baseline = (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
+
+            if gym.mutation_weights:
+                bias_file = gym.generate_mpnn_bias_matrix(generation_counter)
+
+        # After MAX_GENERATIONS for this lineage, switch to next
+        if not lineage_queue:
+            break
+        log.info(f"Lineage complete after {MAX_GENERATIONS} generations. Switching to next baseline...")
+        baseline, lineage_queue = _get_next_baseline_from_queue(lineage_queue)
+        if baseline is None:
+            break
 
     log.info("Evolution loop complete.")
 

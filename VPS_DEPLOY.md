@@ -63,6 +63,10 @@ protenix predict -h   # Protenix
 pxdesign --help       # PXDesign (if installed)
 ```
 
+**Protenix base model**: Phase 2 evolution uses `protenix_base_default_v1.0.0` when available. If you see "not supported for inference", the pipeline automatically falls back to `protenix_base_default_v0.5.0` (works with older Protenix installs). Override with `export PROTENIX_BASE_MODEL=protenix_base_default_v0.5.0` if needed.
+
+**Two-env setup (Protenix 1.0 + PXDesign)**: PXDesign requires Protenix 0.5.0+pxd. To use Protenix 1.0 for structure scoring while keeping PXDesign working: (1) Create `pxdesign` env via PXDesign's install.sh, (2) Create `cascade` env with `pip install protenix` (1.0), (3) Run evolution in `cascade`, (4) Set `export PXDESIGN_CMD="/path/to/envs/pxdesign/bin/pxdesign"` or `export PXDESIGN_CMD="conda run -n pxdesign pxdesign"` so PXDesign runs from its env.
+
 ---
 
 ## Step 4: Prepare Input Data
