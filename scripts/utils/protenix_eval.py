@@ -164,11 +164,15 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
     predict_input = json_path
     use_msa = False
 
+    # Support PROTENIX_CMD for running from a different env (e.g. Protenix 1.0)
+    protenix_bin = os.environ.get("PROTENIX_CMD", "protenix")
+    protenix_exec = protenix_bin.split() if " " in protenix_bin else [protenix_bin]
+
     # Optional: run protenix msa first (improves prediction quality)
     msa_dir = os.path.join(out_dir, f"{base_name}_msa")
     os.makedirs(msa_dir, exist_ok=True)
     try:
-        msa_cmd = ["protenix", "msa", "--input", json_path, "--out_dir", msa_dir]
+        msa_cmd = [*protenix_exec, "msa", "--input", json_path, "--out_dir", msa_dir]
         subprocess.run(msa_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         # Protenix msa may update JSON in-place or output to out_dir; check for updated JSON
         msa_output = os.path.join(msa_dir, os.path.basename(json_path))
@@ -188,7 +192,7 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
     # Protenix CLI: 1.0 uses "pred", older versions use "predict". Try pred first.
     pred_subcmd = "pred"
     cmd = [
-        "protenix", pred_subcmd,
+        *protenix_exec, pred_subcmd,
         "-i", predict_input,
         "-o", out_dir,
         "-n", model_name,
@@ -202,7 +206,7 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
             # Fallback for older Protenix (predict + long flags)
             pred_subcmd = "predict"
             cmd = [
-                "protenix", pred_subcmd,
+                *protenix_exec, pred_subcmd,
                 "--input", predict_input,
                 "--out_dir", out_dir,
                 "--model_name", model_name,

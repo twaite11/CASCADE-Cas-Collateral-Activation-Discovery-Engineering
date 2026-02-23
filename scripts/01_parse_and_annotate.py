@@ -4,7 +4,11 @@ import os
 import re
 import glob
 import sqlite3
+import sys
 import logging
+
+# Allow CSV fields larger than default 128KB (e.g. long sequences in mined_hits)
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 
 logging.basicConfig(
     level=logging.INFO,
