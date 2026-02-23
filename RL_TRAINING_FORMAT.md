@@ -22,7 +22,7 @@ Each line is a JSON object with:
 | `af2_ig` | float | AF2-IG confidence score |
 | `structure_path` | str \| null | Path to CIF/PDB (ON-state ternary). Null if Protenix failed. |
 | `offtarget_by_mismatch` | dict | `{1: dist, 2: dist, 3: dist}` HEPN distance per mismatch count |
-| `is_elite` | bool | True if passed elite thresholds (ipTM≥0.85, AF2-IG≥0.80, ON≤12Å) |
+| `is_elite` | bool | True if passed elite thresholds (ipTM≥0.85, AF2-IG≥0.80, OFF≥25Å, ON≤12Å) |
 
 ## Pipeline Reuse After Post-Training
 

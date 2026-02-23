@@ -38,12 +38,16 @@ class TestRunProtenixInferenceMocked:
                 run_protenix_inference(str(json_path), str(out_dir), model_tier="mini")
 
         mock_run.assert_called()
-        # May be called twice (msa + predict) or once (predict only)
-        predict_calls = [c for c in mock_run.call_args_list if c[0][0] and "predict" in c[0][0]]
-        assert len(predict_calls) >= 1
-        call_args = predict_calls[-1][0][0]
+        # May be called twice (msa + pred/predict) or once (pred/predict only)
+        # Protenix 1.0 uses "pred", older versions use "predict"
+        pred_calls = [
+            c for c in mock_run.call_args_list
+            if c[0][0] and ("pred" in c[0][0] or "predict" in c[0][0])
+        ]
+        assert len(pred_calls) >= 1
+        call_args = pred_calls[-1][0][0]
         assert "protenix" in call_args[0]
-        assert "predict" in call_args
+        assert "pred" in call_args or "predict" in call_args
         assert "protenix_mini_default_v0.5.0" in call_args
         assert "use_default_params" in str(call_args)
 

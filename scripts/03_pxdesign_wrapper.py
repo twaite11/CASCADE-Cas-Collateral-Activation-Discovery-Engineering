@@ -3,6 +3,7 @@ PXDesign wrapper for CASCADE evolution.
 Uses the actual PXDesign CLI: pxdesign infer -i <yaml> -o <dir> --N_sample N
 Generation only; we compute Protenix scores downstream. Generates YAML from baseline structure + metadata,
 runs inference, parses CIF output to variant FASTAs.
+Supports --bias_by_res_jsonl for RL gym steering (fork integration).
 """
 import subprocess
 import json
@@ -11,7 +12,12 @@ import glob
 import logging
 from pathlib import Path
 
+import numpy as np
+
 log = logging.getLogger(__name__)
+
+# ProteinMPNN alphabet order (21 chars; index 20 = X)
+_MPNN_ALPHABET = "ACDEFGHIKLMNPQRSTVWYX"
 
 # Map 3-letter to 1-letter amino acid codes (standard + common)
 _AA3_TO_1 = {
@@ -34,7 +40,6 @@ def _get_structure_chain_ids(structure_path: str):
 def _sequence_from_structure(structure_path: str, chain_id: str = "A") -> str:
     """Extract protein sequence from CIF or PDB using Biopython."""
     from Bio.PDB import MMCIFParser, PDBParser
-    from Bio.PDB.Polypeptide import three_to_one
     ext = os.path.splitext(structure_path)[1].lower()
     parser = MMCIFParser(QUIET=True) if ext == ".cif" else PDBParser(QUIET=True)
     struct = parser.get_structure("s", structure_path)
@@ -44,10 +49,7 @@ def _sequence_from_structure(structure_path: str, chain_id: str = "A") -> str:
         if res.id[0] != " ":
             continue
         resname = res.get_resname()
-        try:
-            seq.append(three_to_one(resname))
-        except KeyError:
-            seq.append(_AA3_TO_1.get(resname, "X"))
+        seq.append(_AA3_TO_1.get(resname, "X"))
     return "".join(seq)
 
 
@@ -112,6 +114,50 @@ def generate_frozen_rec_config(metadata_db_path, variant_id, metadata_override=N
         "linker1_len": linker1_len,
         "linker2_len": linker2_len,
     }
+
+
+def _convert_cascade_bias_to_mpnn_jsonl(
+    cascade_bias_path: str,
+    coords: dict,
+    output_path: str,
+) -> str:
+    """
+    Convert CASCADE's mpnn_bias_gen_X.json (full-protein pos -> AA -> weight)
+    to ProteinMPNN's bias_by_res_jsonl format (structure -> chain -> (L,21) array).
+
+    Index mapping: full-protein linker positions -> binder-local (0-based).
+    - Linker1: rec_end+1..hepn1_start-1 -> 0..linker1_len-1
+    - Linker2: hepn1_end+1..hepn2_start-1 -> linker1_len..binder_length-1
+    """
+    with open(cascade_bias_path) as f:
+        raw = json.load(f)
+    rec_end = coords["rec_end"]
+    hepn1_start = coords["hepn1_start"]
+    hepn1_end = coords["hepn1_end"]
+    hepn2_start = coords["hepn2_start"]
+    linker1_len = coords["linker1_len"]
+    binder_len = coords["binder_length"]
+    bias_arr = np.zeros((binder_len, 21), dtype=np.float32)
+    for pos_str, aa_weights in raw.items():
+        try:
+            full_pos = int(pos_str)
+        except (ValueError, TypeError):
+            continue
+        binder_pos_0 = None
+        if rec_end < full_pos < hepn1_start:
+            binder_pos_0 = full_pos - rec_end - 1
+        elif hepn1_end < full_pos < hepn2_start:
+            binder_pos_0 = linker1_len + (full_pos - hepn1_end - 1)
+        if binder_pos_0 is None or binder_pos_0 < 0 or binder_pos_0 >= binder_len:
+            continue
+        for aa, w in aa_weights.items():
+            if aa in _MPNN_ALPHABET:
+                bias_arr[binder_pos_0, _MPNN_ALPHABET.index(aa)] = float(np.clip(w, -5.0, 5.0))
+    d = {"*": {"binder": bias_arr.tolist()}}
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w") as f:
+        f.write(json.dumps(d) + "\n")
+    return output_path
 
 
 def _build_pxdesign_yaml(
@@ -210,8 +256,12 @@ def run_pxdesign_generation(
         "--N_sample", str(variant_count),
         "--dtype", "bf16",
     ]
+    mpnn_bias_path = None
     if bias_json_path and os.path.exists(bias_json_path):
-        log.info(f"  -> RL bias matrix available but PXDesign infer does not support --bias_aa_json; skipping")
+        mpnn_bias_path = os.path.join(output_dir, f"{variant_id}_mpnn_bias.jsonl")
+        _convert_cascade_bias_to_mpnn_jsonl(bias_json_path, coords, mpnn_bias_path)
+        cmd.extend(["--bias_by_res_jsonl", os.path.abspath(mpnn_bias_path)])
+        log.info(f"  -> RL bias applied via --bias_by_res_jsonl ({mpnn_bias_path})")
 
     try:
         result = subprocess.run(

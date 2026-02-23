@@ -1,6 +1,12 @@
 """
 Unit tests for 03_pxdesign_wrapper: generate_frozen_rec_config only.
 No PXDesign/GPU - we do NOT call run_pxdesign_generation.
+
+
+TODO: Add tests per generation loop through determining if the steering is improving the fitness score per run.
+Are we steering in the right direction per bias addition after a full generative single pass through the loop and does that 
+magnitude of improvement increase with each addition of bias modificiation.
+
 """
 import json
 import pytest

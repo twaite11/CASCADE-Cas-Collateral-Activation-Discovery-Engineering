@@ -9,6 +9,7 @@ from utils.protenix_eval import (
     TARGET_REGION,
     DUMMY_SPACER_RNA,
     DUMMY_TARGET_RNA,
+    POLY_A_FLANK_LEN,
     generate_offtarget_sequences,
     generate_mismatch_sequences,
     generate_offtarget_json,
@@ -37,7 +38,7 @@ class TestGenerateMismatchSequences:
         """Each sequence should differ from target by exactly n positions."""
         target = "ACGUACGUACGUACGUCAGUCGAC"
         for rna, n_mm in generate_mismatch_sequences(target, (1, 2), num_per_count=1, seed=0):
-            core = rna[6:-6]  # strip AAAAAA flank
+            core = rna[POLY_A_FLANK_LEN : POLY_A_FLANK_LEN + len(target)]
             diffs = sum(1 for a, b in zip(core, target) if a != b)
             assert diffs == n_mm, f"Expected {n_mm} mismatches, got {diffs}"
 

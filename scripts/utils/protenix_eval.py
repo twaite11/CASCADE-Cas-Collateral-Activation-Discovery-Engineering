@@ -8,24 +8,26 @@ import logging
 log = logging.getLogger(__name__)
 
 # RNA Constants (Must match what we defined in 01_parse_and_annotate.py)
+POLY_A_FLANK_LEN = 50  # 50 nt poly-A on each flank (5' and 3')
 DUMMY_SPACER_RNA = "GUCGACUGACGUACGUACGUACGU"
 TARGET_REGION = "ACGUACGUACGUACGUCAGUCGAC"  # 24-nt spacer complement
-DUMMY_TARGET_RNA = "AAAAAA" + TARGET_REGION + "AAAAAA"
+DUMMY_TARGET_RNA = "A" * POLY_A_FLANK_LEN + TARGET_REGION + "A" * POLY_A_FLANK_LEN
 
 
 def generate_offtarget_sequences(target_rna, num_scrambled=1, num_mismatch=1, seed=None):
     """
     Auto-generate off-target RNA sequences from the target (legacy).
     target_rna: the 24-nt target region (spacer complement).
-    Returns list of off-target RNA strings with same flanking AAAAAA structure.
+    Returns list of off-target RNA strings with same poly-A flank structure.
     """
+    flank = "A" * POLY_A_FLANK_LEN
     if seed is not None:
         random.seed(seed)
     offtargets = []
     for _ in range(num_scrambled):
         chars = list(target_rna)
         random.shuffle(chars)
-        offtargets.append("AAAAAA" + "".join(chars) + "AAAAAA")
+        offtargets.append(flank + "".join(chars) + flank)
     for _ in range(num_mismatch):
         chars = list(target_rna)
         n_subs = random.randint(2, 3)
@@ -34,7 +36,7 @@ def generate_offtarget_sequences(target_rna, num_scrambled=1, num_mismatch=1, se
             old = chars[i]
             choices = [c for c in "ACGU" if c != old]
             chars[i] = random.choice(choices)
-        offtargets.append("AAAAAA" + "".join(chars) + "AAAAAA")
+        offtargets.append(flank + "".join(chars) + flank)
     return offtargets
 
 
@@ -57,7 +59,8 @@ def generate_mismatch_sequences(target_rna, mismatch_counts=(1, 2, 3), num_per_c
                 old = chars[i]
                 choices = [c for c in "ACGU" if c != old]
                 chars[i] = random.choice(choices)
-            rna = "AAAAAA" + "".join(chars) + "AAAAAA"
+            flank = "A" * POLY_A_FLANK_LEN
+            rna = flank + "".join(chars) + flank
             results.append((rna, n_mismatch))
     return results
 

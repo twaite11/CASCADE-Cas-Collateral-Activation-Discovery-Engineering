@@ -5,6 +5,7 @@ import shutil
 import gc
 import time
 import logging
+import datetime
 import importlib.util
 import numpy as np
 
@@ -36,14 +37,16 @@ from utils.protenix_eval import (
 from utils.pdb_kinematics import calculate_hepn_shift, extract_protenix_scores, find_structure_files
 
 # --- Configuration ---
+RUN_ID = os.environ.get("CASCADE_RUN_ID") or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+OUTPUTS_RUN = os.path.join(os.path.dirname(__file__), "..", "outputs", f"run_{RUN_ID}")
 METADATA_FILE = "../metadata/variant_domain_metadata.json"
 BASE_JSON_DIR = "../jsons"
-PHASE1_PDB_DIR = "../outputs/phase1_screening"  # Where Script 2 saved the initial PDBs
-GENERATION_DIR = "../outputs/generation_queue"
-FAST_EVAL_DIR = "../outputs/fast_eval"
-HIGH_FIDELITY_DIR = "../outputs/high_fidelity_scoring"
-FINAL_HITS_DIR = "../outputs/optimized_switches"
-GYM_DIR = "../outputs/rl_gym_data"
+PHASE1_PDB_DIR = "../outputs/phase1_screening"  # Where Script 2 saved the initial PDBs (shared across runs)
+GENERATION_DIR = os.path.join(OUTPUTS_RUN, "generation_queue")
+FAST_EVAL_DIR = os.path.join(OUTPUTS_RUN, "fast_eval")
+HIGH_FIDELITY_DIR = os.path.join(OUTPUTS_RUN, "high_fidelity_scoring")
+FINAL_HITS_DIR = os.path.join(OUTPUTS_RUN, "optimized_switches")
+GYM_DIR = os.path.join(OUTPUTS_RUN, "rl_gym_data")
 RL_TRAINING_DATASET = os.path.join(GYM_DIR, "rl_training_dataset.jsonl")
 VALIDATED_IDS_FILE = "../outputs/validated_baseline_ids.txt"  # From validate_crispr_repeats.py; restricts lineage to validated repeats
 # Optional: set to path to databases/ for Protenix inputprep (improves MSA quality)
@@ -85,6 +88,7 @@ MIN_AF2_IG_SCORE = 0.80
 MAX_GENERATIONS = 20
 MISMATCH_COUNTS = (1, 2, 3)  # Test 1-, 2-, 3-mismatch off-targets; activity at higher count penalized harder
 SPECIFICITY_PENALTY_BASE = 0.3  # Base penalty; scaled by mismatch count (3mm > 2mm > 1mm)
+FALLBACK_FITNESS_PENALTY = 5.0  # Penalty when PXDesign stitching fails and baseline is used as fallback
 # --- Memory / OOM mitigation (seconds; set to 0 to disable) ---
 SLEEP_AFTER_PXDESIGN = 2.0       # Allow CUDA driver to reclaim GPU memory after diffusion
 SLEEP_AFTER_PROTENIX_BASE = 2.0  # Allow reclaim after heavy base-model ternary prediction
@@ -338,6 +342,7 @@ def main_evolution_loop():
     mismatch_seqs = generate_mismatch_sequences(TARGET_REGION, mismatch_counts=MISMATCH_COUNTS, num_per_count=1, seed=42)
 
     while True:
+        champion = None  # Elitist: highest fitness so far in this lineage; only update when we find better
         for generation_counter in range(1, MAX_GENERATIONS + 1):
             baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id = baseline
 
@@ -482,7 +487,10 @@ def main_evolution_loop():
                     variant_name, mutations_made, off_dist, true_on_dist, iptm, has_potential, offtarget_by_mismatch or None
                 )
                 struct_path = hf_pdb_path if hf_pdb_path else on_pdb
-                is_elite = (iptm >= MIN_IPTM_SCORE and af2_ig >= MIN_AF2_IG_SCORE and true_on_dist <= MAX_ON_DISTANCE)
+                is_elite = (
+                    off_dist >= MIN_OFF_DISTANCE and true_on_dist <= MAX_ON_DISTANCE
+                    and iptm >= MIN_IPTM_SCORE and af2_ig >= MIN_AF2_IG_SCORE
+                )
                 save_rl_training_record(
                     variant_name, variant_fasta, baseline_id, baseline_fasta_path, crrna_lookup_id,
                     generation_counter, mutations_made, fitness, off_dist, true_on_dist, iptm, af2_ig,
@@ -502,23 +510,16 @@ def main_evolution_loop():
             best = max(results, key=lambda r: r[2])
             best_name, best_fasta, best_fitness, best_off, best_on, best_iptm, best_af2_ig, best_hf_pdb, _ = best
 
-            log.info(f"Best variant: {best_name} (fitness={best_fitness:.1f})")
+            log.info(f"Best variant this gen: {best_name} (fitness={best_fitness:.1f})")
 
-            # Preserve structure format (CIF or PDB) when copying
-            best_structure_ext = os.path.splitext(best_hf_pdb)[1] if best_hf_pdb else ".pdb"
-            best_structure_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex{best_structure_ext}")
-
-            if best_iptm >= MIN_IPTM_SCORE and best_af2_ig >= MIN_AF2_IG_SCORE and best_on <= MAX_ON_DISTANCE:
-                log.info(f"ELITE TERNARY SWITCH FOUND! ipTM: {best_iptm:.3f} | AF2-IG: {best_af2_ig:.3f} | ON-Dist: {best_on:.1f}A")
-                os.makedirs(FINAL_HITS_DIR, exist_ok=True)
-                shutil.copy(best_fasta, os.path.join(FINAL_HITS_DIR, f"{best_name}_optimal.fasta"))
-                if best_hf_pdb:
-                    shutil.copy(best_hf_pdb, best_structure_dest)
-                save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
-
-            # Use best variant as next baseline (even if not elite)
             os.makedirs(FINAL_HITS_DIR, exist_ok=True)
-            best_fasta_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_optimal.fasta")
+
+            # Save all variants that meet the elite threshold to FINAL_HITS_DIR (even if not champion)
+            def _is_elite(off, on, iptm, af2_ig):
+                return (
+                    off >= MIN_OFF_DISTANCE and on <= MAX_ON_DISTANCE
+                    and iptm >= MIN_IPTM_SCORE and af2_ig >= MIN_AF2_IG_SCORE
+                )
 
             def _find_existing_structure(final_dir, name):
                 base = os.path.join(final_dir, f"{name}_ternary_complex")
@@ -528,15 +529,32 @@ def main_evolution_loop():
                         return p
                 return None
 
+            for r in results:
+                v_name, v_fasta, _, v_off, v_on, v_iptm, v_af2_ig, v_hf_pdb, _ = r
+                if _is_elite(v_off, v_on, v_iptm, v_af2_ig):
+                    log.info(f"ELITE TERNARY SWITCH: {v_name} (ipTM: {v_iptm:.3f} | AF2-IG: {v_af2_ig:.3f} | OFF: {v_off:.1f}A | ON: {v_on:.1f}A)")
+                    fasta_dest = os.path.join(FINAL_HITS_DIR, f"{v_name}_optimal.fasta")
+                    shutil.copy(v_fasta, fasta_dest)
+                    if v_hf_pdb:
+                        ext = os.path.splitext(v_hf_pdb)[1]
+                        struct_dest = os.path.join(FINAL_HITS_DIR, f"{v_name}_ternary_complex{ext}")
+                        shutil.copy(v_hf_pdb, struct_dest)
+                    save_crrna_for_elite(v_name, crrna_lookup_id, domain_metadata)
+
+            # Resolve best variant's structure for champion candidate
+            best_resolved = False
+            best_structure_ext = os.path.splitext(best_hf_pdb)[1] if best_hf_pdb else ".pdb"
+            best_structure_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex{best_structure_ext}")
+            best_fasta_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_optimal.fasta")
+
             if best_hf_pdb:
                 shutil.copy(best_fasta, best_fasta_dest)
                 shutil.copy(best_hf_pdb, best_structure_dest)
-                save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
-                baseline = (best_name, best_structure_dest, best_fasta_dest, crrna_lookup_id)
+                best_resolved = True
             elif (existing_structure := _find_existing_structure(FINAL_HITS_DIR, best_name)):
                 shutil.copy(best_fasta, best_fasta_dest)
-                save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
-                baseline = (best_name, existing_structure, best_fasta_dest, crrna_lookup_id)
+                best_structure_dest = existing_structure
+                best_resolved = True
             else:
                 on_json = os.path.join(FAST_EVAL_DIR, f"{best_name}_ON.json")
                 if os.path.exists(on_json):
@@ -546,15 +564,24 @@ def main_evolution_loop():
                         )
                         shutil.copy(best_fasta, best_fasta_dest)
                         ext = os.path.splitext(hf_structure)[1] or ".pdb"
-                        hf_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex{ext}")
-                        shutil.copy(hf_structure, hf_dest)
-                        save_crrna_for_elite(best_name, crrna_lookup_id, domain_metadata)
-                        baseline = (best_name, hf_dest, best_fasta_dest, crrna_lookup_id)
+                        best_structure_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex{ext}")
+                        shutil.copy(hf_structure, best_structure_dest)
+                        best_resolved = True
                     except Exception as e:
                         print(f"  Could not get HF PDB for best variant: {e}. Reusing current baseline.")
-                        baseline = (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
-                else:
-                    baseline = (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
+
+            # Elitist selection: champion = highest fitness ever in this lineage; only mutate from champion
+            if best_resolved and (champion is None or best_fitness > champion[3]):
+                champion = (best_name, best_fasta_dest, best_structure_dest, best_fitness)
+                log.info(f"New champion: {best_name} (fitness={best_fitness:.1f})")
+            elif champion is not None:
+                log.info(f"Keeping champion {champion[0]} (fitness={champion[3]:.1f}); current gen best {best_name} had {best_fitness:.1f}")
+
+            if champion is not None:
+                baseline = (champion[0], champion[2], champion[1], crrna_lookup_id)
+            else:
+                # First gen and best could not be resolved; keep current baseline
+                baseline = (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
 
             if gym.mutation_weights:
                 bias_file = gym.generate_mpnn_bias_matrix(generation_counter)

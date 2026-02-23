@@ -21,7 +21,7 @@ METADATA_OUT_FILE = "../metadata/variant_domain_metadata.json"
 
 # RNA Constants
 DUMMY_SPACER_RNA = "GUCGACUGACGUACGUACGUACGU" # 24nt
-DUMMY_TARGET_RNA = "AAAAAA" + "ACGUACGUACGUACGUCAGUCGAC" + "AAAAAA" # Simulates tumor fusion RNA
+DUMMY_TARGET_RNA = "A" * 50 + "ACGUACGUACGUACGUCAGUCGAC" + "A" * 50  # Simulates tumor fusion RNA
 BATCH_SIZE = 1000  # Number of sequences to hold in memory at once
 
 def init_db():
