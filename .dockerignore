@@ -1,0 +1,34 @@
+# Git
+.git
+.gitmodules
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.venv
+venv
+.pytest_cache
+.coverage
+htmlcov
+
+# Large data (mount at runtime instead)
+outputs/run_*
+release_data/
+tool_weights/
+*.npz
+
+# IDE
+.vscode
+.idea
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and temp
+*.log
+*.tmp
+.cache
