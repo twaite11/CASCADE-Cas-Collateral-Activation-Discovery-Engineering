@@ -28,6 +28,17 @@ _AA3_TO_1 = {
 }
 
 
+def _get_pxdesign_env():
+    """Ensure PXDesign subprocess has TOOL_WEIGHTS_ROOT for MPNN sequence design."""
+    env = os.environ.copy()
+    if "TOOL_WEIGHTS_ROOT" not in env or not env["TOOL_WEIGHTS_ROOT"]:
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        _default = os.path.join(_script_dir, "..", "PXDesign_aa_bias_RL", "tool_weights")
+        if os.path.isdir(_default):
+            env["TOOL_WEIGHTS_ROOT"] = os.path.abspath(_default)
+    return env
+
+
 def _get_structure_chain_ids(structure_path: str):
     """Return list of chain IDs in the structure (e.g. ['A','B','C'] for ternary)."""
     from Bio.PDB import MMCIFParser, PDBParser
@@ -271,6 +282,7 @@ def run_pxdesign_generation(
             text=True,
             timeout=3600,
             cwd=os.path.dirname(os.path.abspath(__file__)) or ".",
+            env=_get_pxdesign_env(),
         )
     except subprocess.CalledProcessError as e:
         log.error(f"PXDesign failed:\n{e.stderr}")

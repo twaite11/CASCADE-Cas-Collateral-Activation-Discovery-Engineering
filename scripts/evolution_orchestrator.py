@@ -84,6 +84,11 @@ def _lineage_dirs(lineage_index):
         "high_fidelity": os.path.join(base, "high_fidelity_scoring"),
         "gym": os.path.join(base, "rl_gym_data"),
     }
+
+
+def _final_hits_name(lineage_index, base_name, suffix):
+    """Lineage-prefixed name for FINAL_HITS to avoid collisions when workers share the same baseline."""
+    return f"L{lineage_index}_{base_name}{suffix}"
 VALIDATED_IDS_FILE = "../outputs/validated_baseline_ids.txt"  # From validate_crispr_repeats.py; restricts lineage to validated repeats
 # Optional: set to path to databases/ for Protenix inputprep (improves MSA quality)
 SEQRES_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "databases")
@@ -274,14 +279,15 @@ def build_metadata_override_for_evolved(baseline_id, baseline_fasta_path, crrna_
     }
 
 
-def save_crrna_for_elite(variant_name, crrna_lookup_id, domain_metadata):
+def save_crrna_for_elite(variant_name, crrna_lookup_id, domain_metadata, lineage_index=None):
     """Saves the crRNA sequence (repeat + spacer) for an elite switch to FINAL_HITS_DIR."""
     parent = domain_metadata.get(crrna_lookup_id)
     if not parent:
         return
     crrna_seq = parent["crRNA_repeat_used"] + DUMMY_SPACER_RNA
     os.makedirs(FINAL_HITS_DIR, exist_ok=True)
-    crrna_path = os.path.join(FINAL_HITS_DIR, f"{variant_name}_crRNA.fasta")
+    fname = _final_hits_name(lineage_index, variant_name, "_crRNA.fasta") if lineage_index is not None else f"{variant_name}_crRNA.fasta"
+    crrna_path = os.path.join(FINAL_HITS_DIR, fname)
     with open(crrna_path, 'w') as f:
         f.write(f">{variant_name}_crRNA\n")
         f.write(f"{crrna_seq}\n")
@@ -515,24 +521,26 @@ def run_one_lineage(baseline, lineage_index, gpu_id, domain_metadata, mismatch_s
             v_name, v_fasta, _, v_off, v_on, v_iptm, v_af2_ig, v_hf_pdb, _ = r
             if _is_elite(v_off, v_on, v_iptm, v_af2_ig):
                 log.info(f"ELITE TERNARY SWITCH: {v_name} (ipTM: {v_iptm:.3f} | AF2-IG: {v_af2_ig:.3f})")
-                fasta_dest = os.path.join(FINAL_HITS_DIR, f"{v_name}_optimal.fasta")
+                v_hits_name = _final_hits_name(lineage_index, v_name, "_optimal.fasta")
+                fasta_dest = os.path.join(FINAL_HITS_DIR, v_hits_name)
                 shutil.copy(v_fasta, fasta_dest)
                 if v_hf_pdb:
                     ext = os.path.splitext(v_hf_pdb)[1]
-                    struct_dest = os.path.join(FINAL_HITS_DIR, f"{v_name}_ternary_complex{ext}")
+                    struct_dest = os.path.join(FINAL_HITS_DIR, _final_hits_name(lineage_index, v_name, f"_ternary_complex{ext}"))
                     shutil.copy(v_hf_pdb, struct_dest)
-                save_crrna_for_elite(v_name, crrna_lookup_id, domain_metadata)
+                save_crrna_for_elite(v_name, crrna_lookup_id, domain_metadata, lineage_index=lineage_index)
 
         best_resolved = False
         best_structure_ext = os.path.splitext(best_hf_pdb)[1] if best_hf_pdb else ".pdb"
-        best_structure_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex{best_structure_ext}")
-        best_fasta_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_optimal.fasta")
+        best_hits_base = _final_hits_name(lineage_index, best_name, "")
+        best_structure_dest = os.path.join(FINAL_HITS_DIR, best_hits_base + f"_ternary_complex{best_structure_ext}")
+        best_fasta_dest = os.path.join(FINAL_HITS_DIR, best_hits_base + "_optimal.fasta")
 
         if best_hf_pdb:
             shutil.copy(best_fasta, best_fasta_dest)
             shutil.copy(best_hf_pdb, best_structure_dest)
             best_resolved = True
-        elif (existing_structure := _find_existing_structure(FINAL_HITS_DIR, best_name)):
+        elif (existing_structure := _find_existing_structure(FINAL_HITS_DIR, best_hits_base)):
             shutil.copy(best_fasta, best_fasta_dest)
             best_structure_dest = existing_structure
             best_resolved = True
@@ -545,7 +553,7 @@ def run_one_lineage(baseline, lineage_index, gpu_id, domain_metadata, mismatch_s
                     )
                     shutil.copy(best_fasta, best_fasta_dest)
                     ext = os.path.splitext(hf_structure)[1] or ".pdb"
-                    best_structure_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex{ext}")
+                    best_structure_dest = os.path.join(FINAL_HITS_DIR, best_hits_base + f"_ternary_complex{ext}")
                     shutil.copy(hf_structure, best_structure_dest)
                     best_resolved = True
                 except Exception as e:
@@ -564,6 +572,17 @@ def run_one_lineage(baseline, lineage_index, gpu_id, domain_metadata, mismatch_s
 
         if gym.mutation_weights:
             bias_file = gym.generate_mpnn_bias_matrix(generation_counter)
+
+    # Save champion manifest for competing-mode global selection
+    if champion is not None:
+        manifest_path = os.path.join(gym_dir, "champion.json")
+        with open(manifest_path, "w") as f:
+            json.dump({
+                "fitness": champion[3],
+                "variant_name": champion[0],
+                "fasta_path": champion[1],
+                "structure_path": champion[2],
+            }, f, indent=2)
 
     log.info(f"Lineage {lineage_index} complete.")
 
@@ -614,6 +633,33 @@ def _worker_process(task_queue, gpu_id, domain_metadata, mismatch_seqs):
         run_one_lineage(baseline, lineage_index, gpu_id, domain_metadata, mismatch_seqs, dirs=dirs)
 
 
+def _select_global_champion(lineage_indices):
+    """Pick best champion across lineages (competing mode) and copy to FINAL_HITS as global_champion_*."""
+    best = None
+    best_idx = None
+    for idx in lineage_indices:
+        manifest = os.path.join(OUTPUTS_RUN, f"lineage_{idx}", "rl_gym_data", "champion.json")
+        if not os.path.exists(manifest):
+            continue
+        with open(manifest) as f:
+            data = json.load(f)
+        fitness = data["fitness"]
+        if best is None or fitness > best[1]:
+            best = (data, idx)
+    if best is None:
+        log.warning("No champion manifest found; skipping global champion selection.")
+        return
+    data, idx = best
+    os.makedirs(FINAL_HITS_DIR, exist_ok=True)
+    fasta_src = data["fasta_path"]
+    struct_src = data["structure_path"]
+    shutil.copy(fasta_src, os.path.join(FINAL_HITS_DIR, "global_champion_optimal.fasta"))
+    if struct_src and os.path.exists(struct_src):
+        ext = os.path.splitext(struct_src)[1]
+        shutil.copy(struct_src, os.path.join(FINAL_HITS_DIR, f"global_champion_ternary_complex{ext}"))
+    log.info(f"Global champion: {data['variant_name']} from lineage {idx} (fitness={data['fitness']:.1f})")
+
+
 def _merge_rl_datasets(lineage_indices):
     """Merge per-lineage rl_training_dataset.jsonl into main RL_TRAINING_DATASET."""
     os.makedirs(GYM_DIR, exist_ok=True)
@@ -650,13 +696,24 @@ def main_evolution_loop():
 
     lineage_queue = [(bid, None, None, bid) for bid in baseline_ids]
     tasks = []
-    lineage_index = 0
-    while lineage_queue:
+    competing = os.environ.get("CASCADE_COMPETING", "").strip().lower() in ("1", "true", "yes")
+
+    if competing and num_workers > 1:
+        # All workers evolve the SAME baseline; they compete to find the best variant
         baseline, lineage_queue = _get_next_baseline_from_queue(lineage_queue)
         if baseline is None:
-            break
-        tasks.append((baseline, lineage_index))
-        lineage_index += 1
+            log.warning("No valid baseline for competing mode. Exiting.")
+            return
+        tasks = [(baseline, i) for i in range(num_workers)]
+        log.info(f"Competing mode: {num_workers} workers evolving same baseline {baseline[0]}")
+    else:
+        lineage_index = 0
+        while lineage_queue:
+            baseline, lineage_queue = _get_next_baseline_from_queue(lineage_queue)
+            if baseline is None:
+                break
+            tasks.append((baseline, lineage_index))
+            lineage_index += 1
 
     if not tasks:
         log.warning("No valid Phase 1 structures found for any baseline. Exiting.")
@@ -671,7 +728,10 @@ def main_evolution_loop():
         for baseline, idx in tasks:
             dirs = _lineage_dirs(idx)
             run_one_lineage(baseline, idx, 0, domain_metadata, mismatch_seqs, dirs=dirs)
-        _merge_rl_datasets([idx for _, idx in tasks])
+        lineage_indices = [idx for _, idx in tasks]
+        _merge_rl_datasets(lineage_indices)
+        if competing:
+            _select_global_champion(lineage_indices)
     else:
         # Parallel: fill queue, spawn workers, each binds to GPU
         ctx = mp.get_context("spawn")
@@ -698,7 +758,10 @@ def main_evolution_loop():
             if p.exitcode != 0:
                 log.warning(f"Worker exited with code {p.exitcode}")
 
-        _merge_rl_datasets([idx for _, idx in tasks])
+        lineage_indices = [idx for _, idx in tasks]
+        _merge_rl_datasets(lineage_indices)
+        if competing:
+            _select_global_champion(lineage_indices)
 
     log.info("Evolution loop complete.")
 

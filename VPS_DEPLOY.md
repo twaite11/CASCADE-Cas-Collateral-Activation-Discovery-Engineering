@@ -38,34 +38,74 @@ This installs: `numpy`, `biopython`, `protenix`.
 
 ---
 
-## Step 3: Install PXDesign (Required for Phase 2)
+## Step 3: Two-Environment Setup (Required for Phase 2)
 
-PXDesign is used for variant generation. Install via conda (recommended by PXDesign):
+Phase 2 evolution requires **two separate conda environments**:
+
+| Env | Protenix | Purpose |
+|-----|----------|---------|
+| **cascade-pxdesign** | v0.5.0+pxd | PXDesign variant generation; Protenix mini (OFF/ON filter) |
+| **cascade-protenix** | v1.0.4+ | Protenix base model (high-fidelity ternary scoring); **required** — use latest (pip install protenix) |
+
+PXDesign requires the Protenix 0.5.0+pxd fork. The base model (v1.0.0) is needed for accurate structure scoring. The orchestrator runs in **cascade-protenix** and invokes the other env via env vars.
+
+### 3a. Create cascade-pxdesign (PXDesign + Protenix 0.5.0)
 
 ```bash
-# Clone and install PXDesign
-git clone https://github.com/bytedance/PXDesign.git
-cd PXDesign
-bash -x install.sh --env pxdesign --pkg_manager conda --cuda-version 12.1
-conda activate pxdesign
+# Clone and install PXDesign (creates env with Protenix 0.5.0+pxd)
+cd /workspace
+git clone https://github.com/bytedance/PXDesign.git PXDesign_aa_bias_RL
+cd PXDesign_aa_bias_RL
+bash -x install.sh --env cascade-pxdesign --pkg_manager conda --cuda-version 12.1
 
-# Install CASCADE Python deps into the same env, or use the venv and ensure pxdesign CLI is available
+# Install CASCADE Python deps
+conda activate cascade-pxdesign
 pip install -r /path/to/CASCADE/requirements.txt
-cd /path/to/CASCADE
 ```
 
-**Alternative**: Use PXDesign's Docker image and call it from your venv (ensure `pxdesign` is on PATH).
-
-Verify:
+### 3b. Create cascade-protenix (Protenix latest + base model)
 
 ```bash
-protenix predict -h   # Protenix
-pxdesign --help       # PXDesign (if installed)
+conda create -n cascade-protenix python=3.11
+conda activate cascade-protenix
+pip install protenix  # Install latest (v1.0.4+); includes protenix_base_default_v1.0.0
+# Download the base model when Protenix prompts on first run (or per Protenix docs)
 ```
 
-**Protenix base model**: Phase 2 evolution uses `protenix_base_default_v1.0.0` when available. If you see "not supported for inference", the pipeline automatically falls back to `protenix_base_default_v0.5.0` (works with older Protenix installs). Override with `export PROTENIX_BASE_MODEL=protenix_base_default_v0.5.0` if needed.
+Use `pip install protenix` to get the latest release. Base inference requires Protenix 1.0+ (no fallback to 0.5.0). Optional: set `PROTENIX_BASE_MODEL=protenix_base_20250630_v1.0.0` for the applied model with 2025-06-30 data cutoff (better practical performance).
 
-**Two-env setup (Protenix 1.0 + PXDesign)**: PXDesign requires Protenix 0.5.0+pxd. To use Protenix 1.0 for structure scoring while keeping PXDesign working: (1) Create `pxdesign` env via PXDesign's install.sh, (2) Create `cascade` env with `pip install protenix` (1.0), (3) Run evolution in `cascade`, (4) Set `export PXDESIGN_CMD="/path/to/envs/pxdesign/bin/pxdesign"` or `export PXDESIGN_CMD="conda run -n pxdesign pxdesign"` so PXDesign runs from its env.
+### 3c. Environment Variables for Evolution
+
+Run the evolution orchestrator in **cascade-protenix** and point PXDesign/mini to **cascade-pxdesign**:
+
+```bash
+conda activate cascade-protenix
+
+export PXDESIGN_CMD="/root/miniconda3/envs/cascade-pxdesign/bin/pxdesign"
+export PROTENIX_CMD="/root/miniconda3/envs/cascade-pxdesign/bin/protenix"
+
+cd /workspace/CASCADE/scripts
+python evolution_orchestrator.py
+```
+
+- **PXDESIGN_CMD**: PXDesign runs from cascade-pxdesign (0.5.0+pxd required)
+- **PROTENIX_CMD**: Protenix *mini* (OFF/ON filter) runs from cascade-pxdesign
+- **Base model**: Uses current env's `protenix` (cascade-protenix, v1.0.4+). Default: `protenix_base_default_v1.0.0`. For better practical performance, set `PROTENIX_BASE_MODEL=protenix_base_20250630_v1.0.0`.
+
+Adjust paths if your conda root differs (e.g. `$CONDA_PREFIX/../cascade-pxdesign/bin/...`).
+
+### 3d. Verify
+
+```bash
+# In cascade-pxdesign
+conda activate cascade-pxdesign
+pxdesign --help
+protenix predict -h
+
+# In cascade-protenix
+conda activate cascade-protenix
+protenix pred -h   # or protenix predict -h
+```
 
 ---
 
@@ -113,6 +153,11 @@ Evolution then uses the MSA-enhanced PDBs for those top baselines.
 ### Phase 2: Evolution Loop (GPU)
 
 ```bash
+conda activate cascade-protenix
+export PXDESIGN_CMD="/root/miniconda3/envs/cascade-pxdesign/bin/pxdesign"
+export PROTENIX_CMD="/root/miniconda3/envs/cascade-pxdesign/bin/protenix"
+
+cd scripts
 python evolution_orchestrator.py
 ```
 
@@ -160,9 +205,10 @@ python evolution_orchestrator.py 2>&1 | tee ../logs/phase2_evolution.log
 
 | Issue | Fix |
 |-------|-----|
-| `protenix: command not found` | Ensure venv is activated; `pip install protenix` |
+| `protenix: command not found` | Ensure cascade-protenix is activated for Phase 2 |
+| `Base model not supported` / `requires Protenix 1.0.0+` | Run Phase 2 in cascade-protenix; base inference does not fall back to 0.5.0 |
 | OOM on Protenix base / PXDesign | Use A100 80GB; increase `SLEEP_AFTER_*` in evolution_orchestrator |
-| `pxdesign: command not found` | Install PXDesign (Step 3); add to PATH |
+| `pxdesign: command not found` | Set `PXDESIGN_CMD` to cascade-pxdesign's pxdesign binary |
 | `No Phase 1 PDB found` | Run `02_run_screening.sh` first; check `outputs/phase1_screening/` |
 
 ---
@@ -170,11 +216,10 @@ python evolution_orchestrator.py 2>&1 | tee ../logs/phase2_evolution.log
 ## Quick Reference
 
 ```bash
-# One-time setup
-./scripts/setup_vps.sh
-source .venv/bin/activate   # or: conda activate pxdesign
+# One-time setup: create cascade-pxdesign and cascade-protenix (see Step 3)
 
-# Full run (no MSA for speed)
+# Phase 1 (use cascade-pxdesign or venv with protenix)
+conda activate cascade-pxdesign  # or: source .venv/bin/activate
 cd scripts
 python 01_parse_and_annotate.py
 ./02_run_screening.sh
@@ -182,5 +227,9 @@ python 01_parse_and_annotate.py
 # Optional: Re-run top 5 with MSA for higher-quality seeds (~2.5–4 h)
 ./02b_rerun_top_with_msa.sh 5
 
+# Phase 2: Run evolution in cascade-protenix, point to cascade-pxdesign for PXDesign/mini
+conda activate cascade-protenix
+export PXDESIGN_CMD="/root/miniconda3/envs/cascade-pxdesign/bin/pxdesign"
+export PROTENIX_CMD="/root/miniconda3/envs/cascade-pxdesign/bin/protenix"
 python evolution_orchestrator.py
 ```

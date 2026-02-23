@@ -164,8 +164,12 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
     predict_input = json_path
     use_msa = False
 
-    # Support PROTENIX_CMD for running from a different env (e.g. Protenix 1.0)
-    protenix_bin = os.environ.get("PROTENIX_CMD", "protenix")
+    # Mini: use PROTENIX_CMD (cascade-pxdesign 0.5.0) if set.
+    # Base: use current env's protenix (cascade-protenix 1.0.0) - ignore PROTENIX_CMD.
+    if model_tier == "base":
+        protenix_bin = "protenix"  # Current env (cascade-protenix with v1.0.0)
+    else:
+        protenix_bin = os.environ.get("PROTENIX_CMD", "protenix")
     protenix_exec = protenix_bin.split() if " " in protenix_bin else [protenix_bin]
 
     # Optional: run protenix msa first (improves prediction quality)
@@ -185,9 +189,9 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
     if model_tier == "mini":
         model_name = "protenix_mini_default_v0.5.0"
     else:
-        # Base tier: prefer v1.0.0; fall back to v0.5.0 if not supported (older Protenix installs)
+        # Base tier: require Protenix 1.0+ (protenix_base_default_v1.0.0 or protenix_base_20250630_v1.0.0)
+        # No fallback to 0.5.0 — use cascade-protenix env with pip install protenix (latest)
         model_name = os.environ.get("PROTENIX_BASE_MODEL", "protenix_base_default_v1.0.0")
-        base_fallback = "protenix_base_default_v0.5.0"
 
     # Protenix CLI: 1.0 uses "pred", older versions use "predict". Try pred first.
     pred_subcmd = "pred"
@@ -216,9 +220,10 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
             result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0 and model_tier == "base":
             if "not supported for inference" in (result.stderr or ""):
-                log.warning(f"Base model {model_name} not supported; falling back to {base_fallback}")
-                cmd = [base_fallback if c == model_name else c for c in cmd]
-                result = subprocess.run(cmd, capture_output=True, text=True)
+                raise RuntimeError(
+                    f"Base model {model_name} not supported. High-fidelity inference requires "
+                    "Protenix 1.0+ (pip install protenix). Run evolution in cascade-protenix (see VPS_DEPLOY.md Step 3)."
+                )
         if result.returncode != 0:
             raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
     except subprocess.CalledProcessError as e:
