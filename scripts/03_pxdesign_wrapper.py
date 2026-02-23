@@ -36,6 +36,20 @@ def _get_pxdesign_env():
         _default = os.path.join(_script_dir, "..", "PXDesign_aa_bias_RL", "tool_weights")
         if os.path.isdir(_default):
             env["TOOL_WEIGHTS_ROOT"] = os.path.abspath(_default)
+            log.info("[MPNN] Set TOOL_WEIGHTS_ROOT=%s (auto-detected)", env["TOOL_WEIGHTS_ROOT"])
+        else:
+            log.warning(
+                "[MPNN] TOOL_WEIGHTS_ROOT not set and tool_weights not found at %s. "
+                "MPNN will be skipped. Run: cd PXDesign_aa_bias_RL && bash download_tool_weights.sh",
+                os.path.abspath(_default),
+            )
+    else:
+        mpnn_dir = os.path.join(env["TOOL_WEIGHTS_ROOT"], "mpnn")
+        log.info(
+            "[MPNN] TOOL_WEIGHTS_ROOT=%s, mpnn dir exists=%s",
+            env["TOOL_WEIGHTS_ROOT"],
+            os.path.isdir(mpnn_dir),
+        )
     return env
 
 
