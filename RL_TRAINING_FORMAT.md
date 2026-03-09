@@ -1,48 +1,106 @@
-# RL Training Data Format
+<div align="center">
 
-The evolution orchestrator appends each variant evaluation to `outputs/rl_gym_data/rl_training_dataset.jsonl`. This data is designed for post-training ProteinMPNN (or discrete diffusion models like DRAKES) to bias future Cas13 designs toward better switches.
+# 🤖 RL Training Data Format
 
-## Dataset Format
+**Post-training data for ProteinMPNN / DRAKES discrete diffusion fine-tuning**
 
-Each line is a JSON object with:
+</div>
+
+---
+
+## Overview
+
+The evolution orchestrator appends each variant evaluation to `outputs/rl_gym_data/rl_training_dataset.jsonl`. This data enables **post-training** of protein design models (ProteinMPNN or discrete diffusion models like [DRAKES](https://github.com/ChenyuWang-Monica/DRAKES)) to bias future Cas13 designs toward better allosteric switches.
+
+---
+
+## Dataset Schema
+
+Each line in `rl_training_dataset.jsonl` is a JSON object:
 
 | Field | Type | Description |
-|-------|------|-------------|
-| `variant_id` | str | Unique variant name (e.g. `Cas13a_positive_control_variant_3`) |
-| `generation` | int | Evolution generation number |
-| `baseline_id` | str | Parent baseline ID |
-| `crrna_lookup_id` | str | crRNA metadata lookup key |
-| `sequence` | str | Designed protein sequence (variant) |
-| `baseline_sequence` | str | Parent baseline sequence |
-| `mutations` | list[str] | Mutations vs baseline (e.g. `["123_A", "145_G"]`) |
-| `fitness` | float | Composite fitness (HEPN shift + ipTM + specificity) |
-| `off_dist_A` | float | HEPN distance in OFF state (Å) |
-| `on_dist_A` | float | HEPN distance in ON state (Å) |
-| `iptm` | float | Protenix ipTM score |
-| `af2_ig` | float | AF2-IG confidence score |
-| `structure_path` | str \| null | Path to CIF/PDB (ON-state ternary). Null if Protenix failed. |
-| `offtarget_by_mismatch` | dict | `{1: dist, 2: dist, 3: dist}` HEPN distance per mismatch count |
-| `is_elite` | bool | True if passed elite thresholds (ipTM≥0.85, AF2-IG≥0.80, ON≤12Å) |
+|:------|:-----|:------------|
+| `variant_id` | `str` | Unique variant name (e.g. `Cas13a_positive_control_variant_3`) |
+| `generation` | `int` | Evolution generation number |
+| `baseline_id` | `str` | Parent baseline ID |
+| `crrna_lookup_id` | `str` | crRNA metadata lookup key |
+| `sequence` | `str` | Designed protein sequence (full-length variant) |
+| `baseline_sequence` | `str` | Parent baseline sequence |
+| `mutations` | `list[str]` | Mutations vs baseline (e.g. `["123_A", "145_G"]`) |
+| `fitness` | `float` | Composite fitness score (HEPN shift + ipTM + AF2-IG − penalties) |
+| `off_dist_A` | `float` | HEPN catalytic distance in OFF state (Å) |
+| `on_dist_A` | `float` | HEPN catalytic distance in ON state (Å) |
+| `iptm` | `float` | Protenix ipTM score |
+| `af2_ig` | `float` | AF2-IG interface confidence score |
+| `structure_path` | `str \| null` | Path to CIF/PDB (ON-state ternary). Null if prediction failed. |
+| `offtarget_by_mismatch` | `dict` | `{1: dist, 2: dist, 3: dist}` — HEPN distance per mismatch count |
+| `is_elite` | `bool` | `true` if passed elite thresholds (ipTM ≥ 0.85, AF2-IG ≥ 0.80, ON ≤ 12 Å) |
+
+<details>
+<summary><b>Example record</b></summary>
+
+```json
+{
+  "variant_id": "SRA_hit_042_variant_7",
+  "generation": 3,
+  "baseline_id": "SRA_hit_042",
+  "crrna_lookup_id": "SRA_hit_042",
+  "sequence": "MKISKVDHTRMAVAKGNQ...",
+  "baseline_sequence": "MKISKVDHTRMAVAK...",
+  "mutations": ["156_A", "203_G", "278_L"],
+  "fitness": 42.7,
+  "off_dist_A": 32.1,
+  "on_dist_A": 9.4,
+  "iptm": 0.88,
+  "af2_ig": 0.82,
+  "structure_path": "outputs/high_fidelity_scoring/SRA_hit_042_variant_7_ON/...",
+  "offtarget_by_mismatch": {"1": 28.5, "2": 31.2, "3": 33.0},
+  "is_elite": true
+}
+```
+
+</details>
+
+---
 
 ## Pipeline Reuse After Post-Training
 
 After fine-tuning ProteinMPNN (or a discrete diffusion inverse-folding model) on this data:
 
-1. **Reward**: Use `fitness` as the training signal (or a derived reward from OFF/ON distances).
-2. **Input**: `structure_path` → extract protein backbone; the model learns to generate sequences that fold into that structure and achieve high fitness.
-3. **Integration**: Replace or bias the ProteinMPNN step in the PXDesign pipeline with the fine-tuned model. The pipeline flow becomes:
-   - PXDesign diffusion → backbone structures
-   - **Fine-tuned MPNN** → sequences (biased toward Cas13 switch fitness)
-   - Protenix → evaluate OFF/ON, rank
+1. **Reward signal**: Use `fitness` as the training reward (or derive from OFF/ON distances directly)
+2. **Structure input**: Extract protein backbone from `structure_path` — the model learns to generate sequences that fold into switch-competent structures
+3. **Integration**: Replace or bias the ProteinMPNN step in PXDesign with the fine-tuned model:
+
+```
+PXDesign diffusion → backbone structures
+     ↓
+Fine-tuned MPNN → sequences (biased toward Cas13 switch fitness)
+     ↓
+Protenix → evaluate OFF/ON → rank
+```
+
+---
 
 ## Conversion for DRAKES
 
-[DRAKES](https://github.com/ChenyuWang-Monica/DRAKES) expects (structure, sequence, reward) for discrete diffusion fine-tuning. Convert with:
+[DRAKES](https://github.com/ChenyuWang-Monica/DRAKES) expects `(structure, sequence, reward)` triples for discrete diffusion fine-tuning:
 
-- **Structure**: Extract protein chain from `structure_path` (CIF/PDB). Use the designed chain (not crRNA/target).
-- **Sequence**: `sequence` field.
-- **Reward**: `fitness` (or normalize/scale for stability).
+| DRAKES Field | Source |
+|:-------------|:-------|
+| **Structure** | Extract protein chain from `structure_path` (CIF/PDB). Use designed chain only (not crRNA/target). |
+| **Sequence** | `sequence` field |
+| **Reward** | `fitness` (normalize/scale for training stability) |
 
-## Suggested Minimum Data
+---
 
-Aim for **500+ records** before post-training. Filter to `is_elite == True` for high-quality supervision, or use all records with fitness-weighted loss.
+## Data Requirements
+
+| Scenario | Minimum Records | Recommendation |
+|:---------|:----------------|:---------------|
+| **Supervised fine-tuning** | 200+ | Filter to `is_elite == true` |
+| **Reward-weighted training** | 500+ | Use all records with fitness-weighted loss |
+| **Full RL fine-tuning** | 1000+ | Include negative examples for contrast |
+
+---
+
+*Generated by the CASCADE evolution orchestrator. See [README.md](README.md) for pipeline overview.*
