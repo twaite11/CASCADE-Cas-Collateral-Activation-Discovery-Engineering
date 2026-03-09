@@ -1,14 +1,26 @@
-# CASCADE RunPod Template
-# Build: docker build --platform linux/amd64 -t cascade-runpod:latest .
-# Run: docker run --gpus all -it cascade-runpod:latest
+# =============================================================================
+# CASCADE RunPod Docker Image
+# =============================================================================
+# Two-stage install:
+#   1. Protenix 1.0.4  — structure evaluation (main pipeline)
+#   2. PXDesign         — variant generation (stock, from upstream repo)
+#
+# PXDesign needs Protenix 0.5.0+pxd; we install it into a separate virtualenv
+# and call it via PXDESIGN_CMD from the main pipeline.
+#
+# Build:  docker build --platform linux/amd64 -t cascade-runpod:latest .
+# Run:    docker run --gpus all -it cascade-runpod:latest
+# =============================================================================
 
-# RunPod PyTorch base (CUDA 12.4, Ubuntu 22.04) - includes Jupyter, SSH
+# RunPod PyTorch base (CUDA 12.4, Ubuntu 22.04) — includes Jupyter, SSH
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
+# ---------------------------------------------------------------------------
 # System dependencies
+# ---------------------------------------------------------------------------
 RUN apt-get update --yes && \
     DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
         git \
@@ -17,53 +29,83 @@ RUN apt-get update --yes && \
         build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# --- CASCADE core dependencies ---
+# ---------------------------------------------------------------------------
+# 1. CASCADE main environment (Protenix 1.0.4)
+# ---------------------------------------------------------------------------
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir "protenix>=1.0.4,<2.0"
 
-# --- Copy project (required before PXDesign install) ---
-# Note: Ensure PXDesign_aa_bias_RL is populated: run `git submodule update --init --recursive` before building
-COPY . /app/
+# Verify Protenix 1.0.4
+RUN python -c "import protenix; print(f'Protenix {protenix.__version__} installed')"
 
-# --- PXDesign dependencies (must match PXDesign_aa_bias_RL/install.sh) ---
-# Protenix v0.5.0+pxd (PXDesign-compatible fork)
-RUN pip install --no-cache-dir "git+https://github.com/bytedance/Protenix.git@v0.5.0+pxd"
+# ---------------------------------------------------------------------------
+# 2. PXDesign environment (separate virtualenv with Protenix 0.5.0+pxd)
+# ---------------------------------------------------------------------------
+# Create isolated virtualenv for PXDesign so it doesn't conflict with main env
+RUN python -m venv /opt/pxdesign_env
 
-# PXDesignBench base deps
-RUN pip install --no-cache-dir \
+# Install Protenix 0.5.0+pxd (PXDesign-compatible) into the isolated env
+RUN /opt/pxdesign_env/bin/pip install --no-cache-dir --upgrade pip && \
+    /opt/pxdesign_env/bin/pip install --no-cache-dir \
+        "git+https://github.com/bytedance/Protenix.git@v0.5.0+pxd"
+
+# PXDesign dependencies
+RUN /opt/pxdesign_env/bin/pip install --no-cache-dir \
     einops natsort dm-tree posix_ipc \
     "transformers==4.51.3" "dm-haiku==0.0.13" "optax==0.2.5"
 
 # ColabDesign (no deps)
-RUN pip install --no-cache-dir git+https://github.com/sokrypton/ColabDesign.git --no-deps
+RUN /opt/pxdesign_env/bin/pip install --no-cache-dir \
+    git+https://github.com/sokrypton/ColabDesign.git --no-deps
 
 # JAX with CUDA
-RUN pip install --no-cache-dir "jax[cuda]==0.4.29" \
+RUN /opt/pxdesign_env/bin/pip install --no-cache-dir "jax[cuda]==0.4.29" \
     -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
 # PXDesignBench
-RUN pip install --no-cache-dir "numpy==1.26.3" && \
-    pip install --no-cache-dir git+https://github.com/bytedance/PXDesignBench.git@v0.1.2 --no-deps
+RUN /opt/pxdesign_env/bin/pip install --no-cache-dir "numpy==1.26.3" && \
+    /opt/pxdesign_env/bin/pip install --no-cache-dir \
+        git+https://github.com/bytedance/PXDesignBench.git@v0.1.2 --no-deps
 
-# PXDesign package (from submodule)
-RUN pip install --no-cache-dir -e /app/PXDesign_aa_bias_RL
+# Clone and install stock PXDesign (upstream, no custom fork needed)
+RUN git clone --depth 1 https://github.com/bytedance/PXDesign.git /opt/PXDesign && \
+    /opt/pxdesign_env/bin/pip install --no-cache-dir -e /opt/PXDesign
+
+# Verify PXDesign
+RUN /opt/pxdesign_env/bin/pxdesign --help > /dev/null 2>&1 || \
+    echo "WARNING: pxdesign CLI not available (may need weights first)"
 
 # CUTLASS (for DeepSpeed Evo attention)
 RUN git clone -b v3.5.1 --depth 1 https://github.com/NVIDIA/cutlass.git /opt/cutlass
 ENV CUTLASS_PATH=/opt/cutlass
 
-# Default data dirs (user can override via env or mount volumes)
-ENV PROTENIX_DATA_ROOT_DIR=/app/PXDesign_aa_bias_RL/release_data/ccd_cache
-ENV TOOL_WEIGHTS_ROOT=/app/PXDesign_aa_bias_RL/tool_weights
+# ---------------------------------------------------------------------------
+# 3. Copy CASCADE project
+# ---------------------------------------------------------------------------
+COPY . /app/
 
-# Create dirs for weights (run download_tool_weights.sh on first use or mount pre-downloaded)
-RUN mkdir -p /app/PXDesign_aa_bias_RL/release_data/ccd_cache \
-             /app/PXDesign_aa_bias_RL/tool_weights \
-             /app/outputs
+# ---------------------------------------------------------------------------
+# 4. Environment configuration
+# ---------------------------------------------------------------------------
+# PXDESIGN_CMD tells 03_pxdesign_wrapper.py to use the isolated PXDesign env
+ENV PXDESIGN_CMD="/opt/pxdesign_env/bin/pxdesign"
+
+# Default data/weight paths (override via RunPod env vars or volume mounts)
+ENV PROTENIX_DATA_ROOT_DIR=/opt/PXDesign/release_data/ccd_cache
+ENV TOOL_WEIGHTS_ROOT=/opt/PXDesign/tool_weights
+
+# Create directories for weights (download on first use or mount pre-downloaded)
+RUN mkdir -p /opt/PXDesign/release_data/ccd_cache \
+             /opt/PXDesign/tool_weights \
+             /app/outputs \
+             /app/logs \
+             /app/metadata \
+             /app/databases
 
 # Ensure scripts are executable
-RUN chmod +x /app/PXDesign_aa_bias_RL/download_tool_weights.sh 2>/dev/null || true
+RUN chmod +x /app/scripts/*.sh 2>/dev/null || true
 
 # Default: keep RunPod's Jupyter + SSH (no CMD override)
-# For app-only mode, use: CMD ["python", "/app/scripts/evolution_orchestrator.py"]
+# For headless mode: CMD ["python", "/app/scripts/evolution_orchestrator.py"]

@@ -14,7 +14,7 @@
 
 <br/>
 
-[**Quick Start**](#-quick-start) · [**Architecture**](#-pipeline-architecture) · [**Deploy on VPS**](VPS_DEPLOY.md) · [**Interactive Diagram**](workflow_diagram.html) · [**RL Training Data**](RL_TRAINING_FORMAT.md)
+[**Quick Start**](#-quick-start) · [**Architecture**](#-pipeline-architecture) · [**Deploy on VPS**](VPS_DEPLOY.md) · [**RunPod Docker**](RUNPOD_SETUP.md) · [**Interactive Diagram**](workflow_diagram.html) · [**RL Training Data**](RL_TRAINING_FORMAT.md)
 
 <br/>
 
