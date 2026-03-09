@@ -172,6 +172,40 @@ The pipeline tracks the **all-time highest-fitness protein** across all generati
 
 ---
 
+## 🏷️ Variant Naming Convention
+
+Every variant produced by CASCADE follows a fixed naming scheme designed to stay unique and sortable across thousands of runs:
+
+```
+R{RRR}.L{LL}.G{GG}.V{VVV}
+```
+
+| Segment | Meaning | Padding | Example |
+|:--------|:--------|:--------|:--------|
+| `R` | **Run** — independent pipeline execution | 3 digits | `R001` |
+| `L` | **Lineage** — baseline lineage within a run | 2 digits | `L03` |
+| `G` | **Generation** — evolution generation within a lineage | 2 digits | `G12` |
+| `V` | **Variant** — design index within a generation | 3 digits | `V007` |
+
+**Suffix modifiers** (appended after the variant segment):
+
+| Suffix | Meaning |
+|:-------|:--------|
+| `F` | Fallback variant (stitch failure → baseline reused, penalty applied) |
+| `E` | Elite variant (passed all elite thresholds) |
+
+**Examples:**
+
+| Name | Meaning |
+|:-----|:--------|
+| `R001.L02.G05.V023` | Run 1, lineage 2, generation 5, variant 23 |
+| `R001.L02.G05.V023F` | Same as above — fallback (stitching failed) |
+| `R014.L01.G19.V004E` | Run 14, lineage 1, generation 19, variant 4 — elite |
+
+> Zero-padded segments keep filenames lexicographically sorted. The scheme supports up to 999 runs × 99 lineages × 99 generations × 999 variants per generation.
+
+---
+
 ## 🚀 Quick Start
 
 ### Prerequisites
