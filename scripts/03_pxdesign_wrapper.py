@@ -3,7 +3,6 @@ PXDesign wrapper for CASCADE evolution.
 Uses the actual PXDesign CLI: pxdesign infer -i <yaml> -o <dir> --N_sample N
 Generation only; we compute Protenix scores downstream. Generates YAML from baseline structure + metadata,
 runs inference, parses CIF output to variant FASTAs.
-Supports --bias_by_res_jsonl for RL gym steering (fork integration).
 """
 import subprocess
 import json
@@ -12,12 +11,7 @@ import glob
 import logging
 from pathlib import Path
 
-import numpy as np
-
 log = logging.getLogger(__name__)
-
-# ProteinMPNN alphabet order (21 chars; index 20 = X)
-_MPNN_ALPHABET = "ACDEFGHIKLMNPQRSTVWYX"
 
 # Map 3-letter to 1-letter amino acid codes (standard + common)
 _AA3_TO_1 = {
@@ -26,31 +20,6 @@ _AA3_TO_1 = {
     "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
     "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
 }
-
-
-def _get_pxdesign_env():
-    """Ensure PXDesign subprocess has TOOL_WEIGHTS_ROOT for MPNN sequence design."""
-    env = os.environ.copy()
-    if "TOOL_WEIGHTS_ROOT" not in env or not env["TOOL_WEIGHTS_ROOT"]:
-        _script_dir = os.path.dirname(os.path.abspath(__file__))
-        _default = os.path.join(_script_dir, "..", "PXDesign_aa_bias_RL", "tool_weights")
-        if os.path.isdir(_default):
-            env["TOOL_WEIGHTS_ROOT"] = os.path.abspath(_default)
-            log.info("[MPNN] Set TOOL_WEIGHTS_ROOT=%s (auto-detected)", env["TOOL_WEIGHTS_ROOT"])
-        else:
-            log.warning(
-                "[MPNN] TOOL_WEIGHTS_ROOT not set and tool_weights not found at %s. "
-                "MPNN will be skipped. Run: cd PXDesign_aa_bias_RL && bash download_tool_weights.sh",
-                os.path.abspath(_default),
-            )
-    else:
-        mpnn_dir = os.path.join(env["TOOL_WEIGHTS_ROOT"], "mpnn")
-        log.info(
-            "[MPNN] TOOL_WEIGHTS_ROOT=%s, mpnn dir exists=%s",
-            env["TOOL_WEIGHTS_ROOT"],
-            os.path.isdir(mpnn_dir),
-        )
-    return env
 
 
 def _get_structure_chain_ids(structure_path: str):
@@ -65,6 +34,7 @@ def _get_structure_chain_ids(structure_path: str):
 def _sequence_from_structure(structure_path: str, chain_id: str = "A") -> str:
     """Extract protein sequence from CIF or PDB using Biopython."""
     from Bio.PDB import MMCIFParser, PDBParser
+    from Bio.PDB.Polypeptide import three_to_one
     ext = os.path.splitext(structure_path)[1].lower()
     parser = MMCIFParser(QUIET=True) if ext == ".cif" else PDBParser(QUIET=True)
     struct = parser.get_structure("s", structure_path)
@@ -74,7 +44,10 @@ def _sequence_from_structure(structure_path: str, chain_id: str = "A") -> str:
         if res.id[0] != " ":
             continue
         resname = res.get_resname()
-        seq.append(_AA3_TO_1.get(resname, "X"))
+        try:
+            seq.append(three_to_one(resname))
+        except KeyError:
+            seq.append(_AA3_TO_1.get(resname, "X"))
     return "".join(seq)
 
 
@@ -84,6 +57,77 @@ def _sequence_from_structure_last_chain(structure_path: str) -> str:
     if not chain_ids:
         return ""
     return _sequence_from_structure(structure_path, chain_ids[-1])
+
+
+def _resolve_unknown_residues(seq: str, baseline_seq: str = "") -> str:
+    """
+    Replace X (unknown) residues in designed sequences with valid amino acids.
+    Strategy: use the baseline residue at that position if available, otherwise
+    substitute Glycine (smallest, least disruptive to backbone geometry).
+    Returns the resolved sequence with no X characters.
+    """
+    if "X" not in seq:
+        return seq
+    resolved = []
+    for i, aa in enumerate(seq):
+        if aa == "X":
+            if i < len(baseline_seq) and baseline_seq[i] not in ("X", "-", ""):
+                resolved.append(baseline_seq[i])
+            else:
+                resolved.append("G")  # Glycine fallback
+        else:
+            resolved.append(aa)
+    result = "".join(resolved)
+    n_resolved = seq.count("X")
+    if n_resolved > 0:
+        log.info(f"  Resolved {n_resolved} unknown (X) residue(s) in designed sequence")
+    return result
+
+
+def _apply_bias_to_sequence(full_seq: str, bias_json_path: str, coords: dict) -> str:
+    """
+    Apply RL bias matrix to the designed full sequence.
+    Only modifies linker regions (preserves HEPN catalytic domains and REC).
+    Bias matrix format: {"position_1based": {"amino_acid": weight, ...}, ...}
+    Higher positive weight → prefer this AA; substitution applied when weight > threshold.
+    """
+    if not bias_json_path or not os.path.exists(bias_json_path):
+        return full_seq
+    with open(bias_json_path) as f:
+        bias = json.load(f)
+    if not bias:
+        return full_seq
+
+    rec_end = coords["rec_end"]
+    hepn1_start = coords["hepn1_start"]
+    hepn1_end = coords["hepn1_end"]
+    hepn2_start = coords["hepn2_start"]
+
+    seq_list = list(full_seq)
+    mutations_applied = 0
+
+    for pos_str, aa_weights in bias.items():
+        try:
+            pos = int(pos_str) - 1  # Mutations are 1-based; convert to 0-based index
+        except ValueError:
+            continue
+        if pos < 0 or pos >= len(seq_list):
+            continue
+        # Only modify linker regions (between REC↔HEPN1 and HEPN1↔HEPN2)
+        in_linker1 = rec_end <= pos < hepn1_start
+        in_linker2 = hepn1_end <= pos < hepn2_start
+        if not (in_linker1 or in_linker2):
+            continue
+        # Pick the amino acid with highest positive bias weight
+        best_aa = max(aa_weights, key=aa_weights.get)
+        best_weight = aa_weights[best_aa]
+        if best_weight > 0.5 and best_aa != seq_list[pos]:
+            seq_list[pos] = best_aa
+            mutations_applied += 1
+
+    if mutations_applied > 0:
+        log.info(f"  RL bias applied {mutations_applied} substitution(s) in linker regions")
+    return "".join(seq_list)
 
 
 def _sequence_from_fasta_or_json(fasta_path: str, json_path: str, variant_id: str) -> str:
@@ -123,8 +167,9 @@ def generate_frozen_rec_config(metadata_db_path, variant_id, metadata_override=N
     seq_len = variant_data.get("sequence_length", hepn2_end + 20)
 
     # binder_length = linkers only (REC→HEPN1 and HEPN1→HEPN2); avoids 600-aa de novo design
-    linker1_len = max(0, hepn1_start - rec_end - 1)
-    linker2_len = max(0, hepn2_start - hepn1_end - 1)
+    # All coords are 0-based Python-slice indices; linker spans [rec_end, hepn1_start)
+    linker1_len = max(0, hepn1_start - rec_end)
+    linker2_len = max(0, hepn2_start - hepn1_end)
     binder_length = linker1_len + linker2_len
     MIN_BINDER_LENGTH = 20  # PXDesign may struggle with very short binders
     if binder_length < MIN_BINDER_LENGTH:
@@ -139,50 +184,6 @@ def generate_frozen_rec_config(metadata_db_path, variant_id, metadata_override=N
         "linker1_len": linker1_len,
         "linker2_len": linker2_len,
     }
-
-
-def _convert_cascade_bias_to_mpnn_jsonl(
-    cascade_bias_path: str,
-    coords: dict,
-    output_path: str,
-) -> str:
-    """
-    Convert CASCADE's mpnn_bias_gen_X.json (full-protein pos -> AA -> weight)
-    to ProteinMPNN's bias_by_res_jsonl format (structure -> chain -> (L,21) array).
-
-    Index mapping: full-protein linker positions -> binder-local (0-based).
-    - Linker1: rec_end+1..hepn1_start-1 -> 0..linker1_len-1
-    - Linker2: hepn1_end+1..hepn2_start-1 -> linker1_len..binder_length-1
-    """
-    with open(cascade_bias_path) as f:
-        raw = json.load(f)
-    rec_end = coords["rec_end"]
-    hepn1_start = coords["hepn1_start"]
-    hepn1_end = coords["hepn1_end"]
-    hepn2_start = coords["hepn2_start"]
-    linker1_len = coords["linker1_len"]
-    binder_len = coords["binder_length"]
-    bias_arr = np.zeros((binder_len, 21), dtype=np.float32)
-    for pos_str, aa_weights in raw.items():
-        try:
-            full_pos = int(pos_str)
-        except (ValueError, TypeError):
-            continue
-        binder_pos_0 = None
-        if rec_end < full_pos < hepn1_start:
-            binder_pos_0 = full_pos - rec_end - 1
-        elif hepn1_end < full_pos < hepn2_start:
-            binder_pos_0 = linker1_len + (full_pos - hepn1_end - 1)
-        if binder_pos_0 is None or binder_pos_0 < 0 or binder_pos_0 >= binder_len:
-            continue
-        for aa, w in aa_weights.items():
-            if aa in _MPNN_ALPHABET:
-                bias_arr[binder_pos_0, _MPNN_ALPHABET.index(aa)] = float(np.clip(w, -5.0, 5.0))
-    d = {"*": {"binder": bias_arr.tolist()}}
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    with open(output_path, "w") as f:
-        f.write(json.dumps(d) + "\n")
-    return output_path
 
 
 def _build_pxdesign_yaml(
@@ -281,12 +282,8 @@ def run_pxdesign_generation(
         "--N_sample", str(variant_count),
         "--dtype", "bf16",
     ]
-    mpnn_bias_path = None
     if bias_json_path and os.path.exists(bias_json_path):
-        mpnn_bias_path = os.path.join(output_dir, f"{variant_id}_mpnn_bias.jsonl")
-        _convert_cascade_bias_to_mpnn_jsonl(bias_json_path, coords, mpnn_bias_path)
-        cmd.extend(["--bias_by_res_jsonl", os.path.abspath(mpnn_bias_path)])
-        log.info(f"  -> RL bias applied via --bias_by_res_jsonl ({mpnn_bias_path})")
+        log.info(f"  -> RL bias matrix loaded; will apply to designed sequences post-stitching")
 
     try:
         result = subprocess.run(
@@ -296,7 +293,6 @@ def run_pxdesign_generation(
             text=True,
             timeout=3600,
             cwd=os.path.dirname(os.path.abspath(__file__)) or ".",
-            env=_get_pxdesign_env(),
         )
     except subprocess.CalledProcessError as e:
         log.error(f"PXDesign failed:\n{e.stderr}")
@@ -306,9 +302,15 @@ def run_pxdesign_generation(
         raise
 
     def _write_variant_or_fallback(i: int, binder_seq: str) -> str:
-        """Stitch HEPN into binder; on failure, write baseline as fallback (orchestrator applies penalty)."""
+        """Stitch HEPN into binder; resolve X residues; apply RL bias; on failure write fallback."""
+        # Resolve X's in the binder before stitching (use baseline linker region as reference)
+        binder_seq = _resolve_unknown_residues(binder_seq, full_seq[coords["rec_end"]:])
         full = stitch_hepn_into_binder(binder_seq, full_seq, coords)
         if full:
+            # Resolve any remaining X's in the full stitched sequence
+            full = _resolve_unknown_residues(full, full_seq)
+            # Apply RL bias to linker regions (closed-loop reinforcement)
+            full = _apply_bias_to_sequence(full, bias_json_path, coords)
             name = f"{variant_id}_variant_{i}"
             fasta_path = os.path.join(output_dir, f"{name}.fasta")
             with open(fasta_path, "w") as f:

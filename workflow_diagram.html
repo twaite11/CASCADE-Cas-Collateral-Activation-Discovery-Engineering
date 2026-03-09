@@ -19,8 +19,15 @@
     }
     h1 {
       color: #e2e8f0;
-      margin-bottom: 1.5rem;
+      margin-bottom: 0.5rem;
       font-weight: 600;
+    }
+    .subtitle {
+      color: #94a3b8;
+      max-width: 900px;
+      text-align: center;
+      margin-bottom: 2rem;
+      line-height: 1.6;
     }
     .diagram-wrap {
       width: 100%;
@@ -38,29 +45,56 @@
       max-width: none;
       min-width: 1500px;
     }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-top: 2rem;
+      padding: 1rem 2rem;
+      background: #1e293b;
+      border-radius: 8px;
+      max-width: 900px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: #e2e8f0;
+      font-size: 0.85rem;
+    }
+    .legend-dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+    }
   </style>
 </head>
 <body>
-  <h1>CASCADE Active Learning Evolution Loop</h1>
-  <p style="color:#94a3b8;max-width:800px;text-align:center;margin-bottom:2rem;">
-    From metagenomic hits to predicted Cas13-like suicide switches. PXDesign designs linkers only (REC + HEPN frozen). Evolution selects the single best variant per generation; we compute all scores with Protenix. Specificity via 1-, 2-, 3-mismatch off-target tests (activity at higher mismatch penalized harder).
+  <h1>CASCADE &mdash; Active Learning Evolution Loop</h1>
+  <p class="subtitle">
+    From metagenomic Cas13 hits to predicted allosteric suicide switches.
+    PXDesign designs <strong>linkers only</strong> (REC + HEPN domains frozen from wild-type).
+    X residues resolved via baseline lookup or Glycine fallback.
+    RL bias matrix applied post-stitching to steer linker amino acids toward higher fitness.
+    The <strong>global best protein</strong> is always used as the next baseline &mdash; never regressing.
+    Fitness = HEPN shift + ipTM + AF2-IG &minus; specificity penalties (1/2/3-mismatch off-targets).
   </p>
   <div class="diagram-wrap">
   <pre class="mermaid">
 graph TD
     %% ========== PHASE 1: BOOTSTRAP ==========
-    subgraph Phase1["Phase 1: Bootstrap Baselines"]
-        Mined["deep_hits_*.fasta<br>Metagenomic Cas13e-like ORFs"]
-        MetaCSV["deep_hits_*_metadata.csv<br>Native crRNA k-mers"]
+    subgraph Phase1["Phase 1 &mdash; Bootstrap Baselines"]
+        Mined["deep_hits_*.fasta<br/>Metagenomic Cas13e-like ORFs"]
+        MetaCSV["deep_hits_*_metadata.csv<br/>Native crRNA k-mers"]
         Mined --> Parse
         MetaCSV --> Parse
-        Parse["01_parse_and_annotate.py<br>SQLite DB + HEPN anchoring + JSONs"]
+        Parse["01_parse_and_annotate.py<br/>SQLite DB + HEPN anchoring<br/>0-based domain coords + JSONs"]
         Parse --> Screen
-        Screen["02_run_screening.sh<br>Protenix-mini filter"]
-        Screen --> Baselines["phase1_screening/<br>Baseline CIFs/PDBs"]
-        Validate["validate_crispr_repeats.py<br>Optional: validated_baseline_ids.txt"]
+        Screen["02_run_screening.sh<br/>Protenix-mini filter"]
+        Screen --> Baselines["phase1_screening/<br/>Baseline CIFs/PDBs"]
+        Validate["validate_crispr_repeats.py<br/>Optional: validated_baseline_ids.txt"]
         Screen -.->|optional| Validate
-        MSA["02b_rerun_top_with_msa.sh<br>Optional: MSA re-run for top N"]
+        MSA["02b_rerun_top_with_msa.sh<br/>Optional: MSA re-run for top N"]
         Screen -.->|optional| MSA
     end
 
@@ -69,70 +103,91 @@ graph TD
     Validate -.->|Restricts lineage| Loop
 
     %% ========== PHASE 2: EVOLUTION LOOP ==========
-    subgraph Loop["Phase 2: Active Learning Evolution Loop (evolution_orchestrator.py)"]
-        Baseline["Current Baseline<br>id + structure + FASTA + crrna_lookup"]
-        LineageQueue["Lineage Queue<br>5 initial, fallback on failure"]
-        Baseline --> PXDesign
-        LineageQueue -.->|On failure| Baseline
+    subgraph Loop["Phase 2 &mdash; Active Learning Evolution Loop (evolution_orchestrator.py)"]
+        GlobalBest["Global Best Tracker<br/>All-time highest fitness protein<br/>Always used as next baseline"]
+        Baseline["Current Baseline<br/>id + structure + FASTA + crrna_lookup"]
+        LineageQueue["Lineage Queue<br/>Validated baselines, fallback on failure"]
+        GlobalBest -->|"Revert if gen doesn't beat"| Baseline
+        LineageQueue -.->|On exhaustion| Baseline
 
-        subgraph Gen["Variant Generation"]
-            PXDesign["run_pxdesign_generation<br>pxdesign infer, generation only<br>Frozen: REC + HEPN; Designed: linkers<br>Parse CIFs, stitch HEPN into binder"]
-            Bias["mpnn_bias_gen_X.json<br>RL mutation weights"]
-            Bias -.->|Steers next gen| PXDesign
-            PXDesign --> Variants["2 variant .fasta per generation"]
+        subgraph Gen["Variant Generation (03_pxdesign_wrapper.py)"]
+            PXDesign["pxdesign infer<br/>Frozen: REC + HEPN<br/>Designed: linker1 + linker2"]
+            Stitch["stitch_hepn_into_binder<br/>0-based coords: seq[start:end]<br/>Insert WT HEPN1 &amp; HEPN2"]
+            ResolveX["_resolve_unknown_residues<br/>X → baseline AA or Glycine<br/>Eliminates all X characters"]
+            ApplyBias["_apply_bias_to_sequence<br/>RL bias from EvolutionGym<br/>Modifies ONLY linker regions<br/>Preserves HEPN catalytic sites"]
+            Bias["mpnn_bias_gen_X.json<br/>RL mutation weights<br/>(substitutions only, no ins/del)"]
+            PXDesign --> Stitch
+            Stitch --> ResolveX
+            ResolveX --> ApplyBias
+            Bias -->|"weight > 0.5 threshold"| ApplyBias
+            ApplyBias --> Variants["2 variant .fasta per generation<br/>+ fallback baselines on stitch failure"]
         end
 
-        Variants --> GenJSON
+        Baseline --> PXDesign
+        Variants --> MutTrack
 
-        subgraph Eval["Structural Evaluation (Protenix - we compute all scores)"]
-            GenJSON["generate_evaluation_jsons<br>crrna_lookup_id for evolved"]
-            GenJSON --> OFF["OFF-State JSON<br>protein + crRNA"]
-            GenJSON --> ON["ON-State JSON<br>protein + crRNA + target"]
-            GenJSON --> OffTarget["Off-Target JSONs<br>1-, 2-, 3-mismatch targets"]
+        subgraph MutCheck["Mutation Analysis"]
+            MutTrack["extract_mutations<br/>Compare variant vs baseline<br/>pos_AA (sub), pos_del, pos_AA_ins"]
+            HEPNidx["get_catalytic_histidine_indices<br/>R.3,6.H motif → 1-based His positions"]
+        end
+
+        MutTrack --> GenJSON
+        HEPNidx --> EvalBlock
+
+        subgraph EvalBlock["Structural Evaluation (Protenix)"]
+            GenJSON["generate_evaluation_jsons<br/>crrna_lookup_id for evolved baselines"]
+            GenJSON --> OFF["OFF-State JSON<br/>protein + crRNA only"]
+            GenJSON --> ON["ON-State JSON<br/>protein + crRNA + target RNA"]
             OFF --> ProtenixMini
             ON --> ProtenixMini
-            ProtenixMini["run_protenix_inference<br>mini: OFF + ON"]
-            ProtenixMini --> PassFilter{"Pass Filter?<br>OFF≥25Å ON≤12Å"}
+            ProtenixMini["run_protenix_inference<br/>mini: fast OFF + ON screen"]
+            ProtenixMini --> PassFilter{"Pass Filter?<br/>OFF ≥ 25Å AND ON ≤ 12Å"}
             PassFilter -->|Yes| ProtenixBase
-            ProtenixBase["run_protenix_inference<br>base: ternary ON"]
+            ProtenixBase["run_protenix_inference<br/>base: high-fidelity ternary ON"]
             ProtenixBase --> PDBout["3D CIFs/PDBs"]
-            ProtenixBase --> JSONout["Confidence JSON"]
+            ProtenixBase --> JSONout["Confidence JSON<br/>ipTM, pTM, AF2-IG"]
             PassFilter -->|Yes| OffTarget
+            OffTarget["Off-Target JSONs<br/>1-, 2-, 3-mismatch targets"]
             OffTarget --> ProtenixOT["mini: 1/2/3-mismatch complexes"]
-            ProtenixOT --> OTDist["HEPN dist per mismatch<br>progressive penalty: 3mm > 2mm > 1mm"]
+            ProtenixOT --> OTDist["HEPN dist per mismatch<br/>Progressive penalty: 3mm > 2mm > 1mm"]
         end
 
         subgraph Physics["Biophysical Scoring"]
-            PDBout --> HEPN["calculate_hepn_shift<br>R.{4,6}H distance OFF vs ON"]
-            JSONout --> Scores["extract_protenix_scores<br>ipTM, AF2-IG"]
+            PDBout --> HEPN["calculate_hepn_shift<br/>Cα distance between<br/>catalytic Histidines (OFF vs ON)"]
+            JSONout --> Scores["extract_protenix_scores<br/>ipTM + AF2-IG interface confidence"]
         end
 
         HEPN --> ComputeFitness
         Scores --> ComputeFitness
         OTDist --> ComputeFitness
-        PassFilter -->|No| ComputeFitness
-        ComputeFitness["compute_fitness<br>shift + ipTM + progressive mismatch penalty"]
+        PassFilter -->|"No (low potential)"| ComputeFitness
+        ComputeFitness["compute_fitness<br/>(OFF−ON shift) + ipTM×50 + AF2-IG×20<br/>− progressive specificity penalty<br/>× 2.0 multiplier if full ternary<br/>− 5.0 penalty if fallback variant"]
 
-        subgraph Results["Collect & Rank"]
+        subgraph Results["Collect &amp; Rank"]
             ComputeFitness --> Collect["All variants scored"]
-            Collect --> SelectBest["Select SINGLE BEST<br>by fitness"]
+            Collect --> SelectBest["Select generation BEST<br/>by fitness"]
         end
 
-        ComputeFitness --> RLData["save_rl_training_record<br>rl_training_dataset.jsonl"]
+        ComputeFitness --> RLData["save_rl_training_record<br/>rl_training_dataset.jsonl<br/>(seq, structure, reward)"]
+
         SelectBest --> Gym
-        Gym["EvolutionGym.register_evaluation<br>Reward good mutations, penalize bad"]
-        Gym --> UpdateBias["generate_mpnn_bias_matrix"]
+        Gym["EvolutionGym.register_evaluation<br/>EMA: 0.5×old + 0.5×new fitness<br/>Passes af2_ig into compute_fitness"]
+        Gym --> UpdateBias["generate_mpnn_bias_matrix<br/>Only substitutions (len==2)<br/>Clipped to [-5.0, +5.0]"]
         UpdateBias --> Bias
 
-        SelectBest --> EliteCheck{"Elite Switch?<br>ipTM≥0.85, AF2-IG≥0.80"}
-        EliteCheck -->|Yes| SaveElite["Save to optimized_switches/"]
-        SelectBest --> NextBaseline["Best variant becomes<br>NEXT BASELINE"]
-        NextBaseline --> Baseline
+        SelectBest --> GlobalCheck{"Beats global best?"}
+        GlobalCheck -->|"Yes: new global best"| UpdateGlobal["Update Global Best<br/>Copy FASTA + structure<br/>to optimized_switches/"]
+        GlobalCheck -->|"No: revert to global best"| RevertBaseline["Use global best<br/>as next baseline"]
+        UpdateGlobal --> GlobalBest
+        RevertBaseline --> GlobalBest
+
+        SelectBest --> EliteCheck{"Elite Switch?<br/>ipTM ≥ 0.85<br/>AF2-IG ≥ 0.80<br/>ON ≤ 12Å"}
+        EliteCheck -->|Yes| SaveElite["Save to optimized_switches/<br/>FASTA + ternary CIF + crRNA"]
     end
 
     subgraph Series["Outputs"]
-        EliteOut["optimized_switches/<br>Elite FASTAs + ternary complex + crRNA<br>Ready for synthesis"]
-        RLOut["rl_gym_data/<br>mpnn_bias_gen_X.json + rl_training_dataset.jsonl"]
+        EliteOut["optimized_switches/<br/>Elite FASTAs + ternary complexes + crRNA<br/>Ready for wet-lab synthesis"]
+        RLOut["rl_gym_data/<br/>mpnn_bias_gen_X.json<br/>rl_training_dataset.jsonl<br/>For DRAKES/ProteinMPNN post-training"]
     end
     SaveElite --> EliteOut
     RLData --> RLOut
@@ -143,10 +198,29 @@ graph TD
     classDef gym fill:#581c87,stroke:#c084fc,color:#fff
     classDef output fill:#7c2d12,stroke:#f97316,color:#fff
     classDef file fill:#1a202c,stroke:#94a3b8,color:#e2e8f0
+    classDef best fill:#065f46,stroke:#34d399,color:#fff
+    classDef resolve fill:#164e63,stroke:#22d3ee,color:#fff
     class Mined,MetaCSV,Baselines,Variants,Bias,PDBout,JSONout file
-    class Parse,Screen,Validate,MSA,PXDesign,GenJSON,ProtenixMini,ProtenixBase,ProtenixOT,HEPN,Scores,Gym,RLData,UpdateBias,ComputeFitness function
-    class SaveElite,EliteOut,RLOut,NextBaseline output
+    class Parse,Screen,Validate,MSA bootstrap
+    class PXDesign,Stitch gen
+    class ResolveX,ApplyBias resolve
+    class GenJSON,ProtenixMini,ProtenixBase,ProtenixOT,OffTarget eval
+    class HEPN,Scores eval
+    class Gym,RLData,UpdateBias,ComputeFitness gym
+    class SaveElite,EliteOut,RLOut output
+    class GlobalBest,UpdateGlobal,RevertBaseline best
   </pre>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#1e3a5f;border:1px solid #60a5fa;"></div> Bootstrap</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#14532d;border:1px solid #4ade80;"></div> Generation</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#164e63;border:1px solid #22d3ee;"></div> X-Resolution &amp; RL Bias</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#2d3748;border:1px solid #4fd1c5;"></div> Evaluation</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#581c87;border:1px solid #c084fc;"></div> RL Gym &amp; Fitness</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#065f46;border:1px solid #34d399;"></div> Global Best Tracking</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#7c2d12;border:1px solid #f97316;"></div> Outputs</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#1a202c;border:1px solid #94a3b8;"></div> Data Files</div>
   </div>
 
   <script>
@@ -160,7 +234,7 @@ graph TD
         lineColor: '#64748b',
         secondaryColor: '#1e293b',
         tertiaryColor: '#0f172a',
-        fontSize: '16px',
+        fontSize: '15px',
         fontFamily: 'Segoe UI, system-ui, sans-serif'
       },
       flowchart: {

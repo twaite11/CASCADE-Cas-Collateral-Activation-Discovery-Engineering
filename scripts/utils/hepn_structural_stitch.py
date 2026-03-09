@@ -2,6 +2,10 @@
 HEPN sequence stitching for PXDesign output.
 PXDesign generates linkers only (REC→HEPN1 and HEPN1→HEPN2). This module inserts
 the wild-type HEPN1 and HEPN2 sequences at the correct indices into the designed binder.
+
+All domain coordinates (hepn1_start, hepn1_end, etc.) are 0-based Python-slice indices:
+    baseline_full_seq[hepn1_start : hepn1_end]  →  HEPN1 domain sequence
+This matches the output of 01_parse_and_annotate.py which uses regex .start() (0-based).
 """
 import logging
 
@@ -19,6 +23,7 @@ def stitch_hepn_into_binder(
 
     full = rec + binder[:linker1_len] + hepn1 + binder[linker1_len:linker1_len+linker2_len] + hepn2
 
+    All coords are 0-based (Python slice convention).
     Returns stitched full sequence (rec + linkers + hepn1 + linkers + hepn2), or None on failure.
     """
     rec_end = coords["rec_end"]
@@ -34,8 +39,9 @@ def stitch_hepn_into_binder(
         log.warning(f"Baseline sequence too short for HEPN2 end ({hepn2_end})")
         return None
 
-    hepn1_seq = baseline_full_seq[hepn1_start - 1 : hepn1_end]
-    hepn2_seq = baseline_full_seq[hepn2_start - 1 : hepn2_end]
+    # 0-based slice: seq[start:end] extracts the exact domain
+    hepn1_seq = baseline_full_seq[hepn1_start : hepn1_end]
+    hepn2_seq = baseline_full_seq[hepn2_start : hepn2_end]
     rec_seq = baseline_full_seq[:rec_end]
 
     if expected_binder_len == 0:
