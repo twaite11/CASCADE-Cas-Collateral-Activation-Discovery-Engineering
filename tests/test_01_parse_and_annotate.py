@@ -68,7 +68,7 @@ class TestLoadFilesToDb:
 
 
 class TestIdentifyHepnDomains:
-    """Test identify_hepn_domains."""
+    """Test identify_hepn_domains with separation and positional filtering."""
 
     def test_marks_hepn_success(self, tmpdir, sample_fasta, sample_csv, monkeypatch):
         data_dir = Path(sample_fasta).parent
@@ -83,6 +83,8 @@ class TestIdentifyHepnDomains:
         row = cur.fetchone()
         assert row[0] == "success"
         assert row[1] is not None and row[2] is not None
+        # HEPN2 should be well separated from HEPN1
+        assert row[2] > row[1] + 100
         conn.close()
 
     def test_marks_failed_when_few_motifs(self, tmpdir, monkeypatch):
@@ -102,11 +104,51 @@ class TestIdentifyHepnDomains:
         assert row[0] == "failed"
         conn.close()
 
+    def test_marks_failed_when_motifs_too_close(self, tmpdir, monkeypatch):
+        """Two HEPN motifs < 150 residues apart should be marked failed."""
+        data_dir = tmpdir / "data"
+        data_dir.mkdir()
+        # Two R...H motifs only 100 residues apart
+        close_seq = "MAAAAARAILXH" + "G" * 100 + "RVVVXH" + "G" * 40
+        (data_dir / "close.fasta").write_text(f">close\n{close_seq}\n")
+        (data_dir / "close_metadata.csv").write_text("sequence_id,repeat_domains,sra_accession,score\nclose,AAA,SRR1,0.5\n")
+        db_file = tmpdir / "test.db"
+        _patch_config(monkeypatch, data_dir, db_file, tmpdir / "jsons", tmpdir / "meta.json")
+        conn = parse_mod.init_db()
+        parse_mod.load_files_to_db(conn)
+        parse_mod.identify_hepn_domains(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT status FROM variants WHERE sequence_id='close'")
+        row = cur.fetchone()
+        assert row[0] == "failed"
+        conn.close()
+
+    def test_expanded_hepn_boundaries(self, tmpdir, sample_fasta, sample_csv, monkeypatch):
+        """HEPN domains should use -60/+100 boundaries around the catalytic R."""
+        data_dir = Path(sample_fasta).parent
+        db_file = tmpdir / "meta" / "test.db"
+        db_file.parent.mkdir(parents=True)
+        _patch_config(monkeypatch, data_dir, db_file, tmpdir / "jsons", tmpdir / "meta.json")
+        conn = parse_mod.init_db()
+        parse_mod.load_files_to_db(conn)
+        parse_mod.identify_hepn_domains(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT hepn1_start, hepn1_end, hepn2_start, hepn2_end FROM variants WHERE sequence_id='test_cas13'")
+        row = cur.fetchone()
+        h1_start, h1_end, h2_start, h2_end = row
+        # HEPN1 R is at pos 6: start = max(0, 6-60) = 0, end = 6+100 = 106
+        assert h1_start == 0
+        assert h1_end == 106
+        # HEPN2 R is at pos 200: start = max(106, 200-60) = 140, end = 200+100 = 300
+        assert h2_start == 140
+        assert h2_end == 300
+        conn.close()
+
 
 class TestGenerateProtenixJsons:
-    """Test generate_protenix_jsons."""
+    """Test generate_protenix_jsons (now generates OFF + ON JSONs)."""
 
-    def test_generates_json_and_metadata(self, tmpdir, sample_fasta, sample_csv, monkeypatch):
+    def test_generates_off_on_jsons_and_metadata(self, tmpdir, sample_fasta, sample_csv, monkeypatch):
         data_dir = Path(sample_fasta).parent
         json_dir = tmpdir / "jsons"
         meta_file = tmpdir / "variant_domain_metadata.json"
@@ -122,6 +164,52 @@ class TestGenerateProtenixJsons:
         assert "test_cas13" in meta
         assert "domains" in meta["test_cas13"]
         assert "HEPN1" in meta["test_cas13"]["domains"]
-        jsons = list(json_dir.glob("*.json"))
-        assert len(jsons) >= 1
+        # Should have both OFF and ON JSONs
+        off_jsons = list(json_dir.glob("*_OFF.json"))
+        on_jsons = list(json_dir.glob("*_ON.json"))
+        assert len(off_jsons) >= 1, "No OFF-state JSONs generated"
+        assert len(on_jsons) >= 1, "No ON-state JSONs generated"
+        conn.close()
+
+    def test_off_json_has_no_target_rna(self, tmpdir, sample_fasta, sample_csv, monkeypatch):
+        """OFF-state JSON should have protein + crRNA only (2 sequence entries)."""
+        data_dir = Path(sample_fasta).parent
+        json_dir = tmpdir / "jsons"
+        meta_file = tmpdir / "variant_domain_metadata.json"
+        db_file = tmpdir / "test.db"
+        _patch_config(monkeypatch, data_dir, db_file, json_dir, meta_file)
+        conn = parse_mod.init_db()
+        parse_mod.load_files_to_db(conn)
+        parse_mod.identify_hepn_domains(conn)
+        parse_mod.generate_protenix_jsons(conn)
+        off_jsons = list(json_dir.glob("*_OFF.json"))
+        assert len(off_jsons) >= 1
+        with open(off_jsons[0]) as f:
+            payload = json.load(f)
+        sequences = payload[0]["sequences"]
+        assert len(sequences) == 2  # protein + crRNA only (no target RNA)
+        assert "proteinChain" in sequences[0]
+        assert "rnaSequence" in sequences[1]
+        conn.close()
+
+    def test_on_json_has_target_rna(self, tmpdir, sample_fasta, sample_csv, monkeypatch):
+        """ON-state JSON should have protein + crRNA + target RNA (3 sequence entries)."""
+        data_dir = Path(sample_fasta).parent
+        json_dir = tmpdir / "jsons"
+        meta_file = tmpdir / "variant_domain_metadata.json"
+        db_file = tmpdir / "test.db"
+        _patch_config(monkeypatch, data_dir, db_file, json_dir, meta_file)
+        conn = parse_mod.init_db()
+        parse_mod.load_files_to_db(conn)
+        parse_mod.identify_hepn_domains(conn)
+        parse_mod.generate_protenix_jsons(conn)
+        on_jsons = list(json_dir.glob("*_ON.json"))
+        assert len(on_jsons) >= 1
+        with open(on_jsons[0]) as f:
+            payload = json.load(f)
+        sequences = payload[0]["sequences"]
+        assert len(sequences) == 3  # protein + crRNA + target RNA
+        assert "proteinChain" in sequences[0]
+        assert "rnaSequence" in sequences[1]
+        assert "rnaSequence" in sequences[2]
         conn.close()

@@ -84,12 +84,15 @@ class TestEvolutionGym:
 
 
 class TestGetCatalyticHistidineIndices:
-    """Test get_catalytic_histidine_indices."""
+    """Test get_catalytic_histidine_indices with separation filtering."""
 
     def test_returns_indices_for_two_motifs(self, variant_fasta):
+        """Two well-separated HEPN motifs should return valid indices."""
         h1, h2 = get_catalytic_histidine_indices(variant_fasta)
         assert h1 is not None and h2 is not None
         assert h1 < h2
+        # The two catalytic sites should be well separated
+        assert h2 - h1 >= 150
 
     def test_returns_none_for_one_motif(self, tmpdir):
         p = tmpdir / "one_hepn.fasta"
@@ -100,6 +103,14 @@ class TestGetCatalyticHistidineIndices:
     def test_returns_none_for_no_motif(self, tmpdir):
         p = tmpdir / "no_hepn.fasta"
         p.write_text(">x\nMGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG\n")
+        h1, h2 = get_catalytic_histidine_indices(str(p))
+        assert h1 is None and h2 is None
+
+    def test_returns_none_for_close_motifs(self, tmpdir):
+        """Two R...H motifs < 150 residues apart should return None."""
+        p = tmpdir / "close_hepn.fasta"
+        seq = "MAAAAARAILXH" + "G" * 100 + "RVVVXH" + "G" * 40
+        p.write_text(f">x\n{seq}\n")
         h1, h2 = get_catalytic_histidine_indices(str(p))
         assert h1 is None and h2 is None
 
@@ -116,10 +127,11 @@ class TestExtractMutations:
         assert any("_P" in m or "13_" in m for m in muts)
 
     def test_uses_baseline_fasta_when_provided(self, variant_fasta, tmpdir):
+        from conftest import _TEST_SEQ, _VARIANT_SEQ
         baseline_fasta = tmpdir / "baseline.fasta"
-        baseline_fasta.write_text(">baseline\nMAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG\n")
+        baseline_fasta.write_text(f">baseline\n{_TEST_SEQ}\n")
         variant = tmpdir / "v.fasta"
-        variant.write_text(">v\nMAAAAARAILXHPGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG\n")  # 13 G->P
+        variant.write_text(f">v\n{_VARIANT_SEQ}\n")
         muts = extract_mutations("x", str(variant), baseline_fasta_path=str(baseline_fasta))
         assert any("13_P" in m for m in muts)
 
@@ -133,11 +145,12 @@ class TestExtractMutations:
 
 
 class TestBuildMetadataOverride:
-    """Test build_metadata_override_for_evolved."""
+    """Test build_metadata_override_for_evolved with expanded boundaries."""
 
     def test_returns_override_dict(self, tmpdir, sample_metadata_json):
+        from conftest import _TEST_SEQ
         baseline_fasta = tmpdir / "evolved.fasta"
-        baseline_fasta.write_text(">evolved\nMAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG\n")
+        baseline_fasta.write_text(f">evolved\n{_TEST_SEQ}\n")
         meta = json.loads(Path(sample_metadata_json).read_text())
         override = build_metadata_override_for_evolved(
             "evolved_id", str(baseline_fasta), "test_cas13", meta
@@ -146,10 +159,28 @@ class TestBuildMetadataOverride:
         assert "evolved_id" in override
         assert "domains" in override["evolved_id"]
         assert "HEPN1" in override["evolved_id"]["domains"]
+        # Verify expanded boundaries: -60/+100
+        h1 = override["evolved_id"]["domains"]["HEPN1"]
+        h2 = override["evolved_id"]["domains"]["HEPN2"]
+        # HEPN1 R is at pos 6: start = max(0, 6-60) = 0, end = 6+100 = 106
+        assert h1["start"] == 0
+        assert h1["end"] == 106
+        # HEPN2 R is at pos 200: start = max(106, 200-60) = 140, end = 200+100 = 300
+        assert h2["start"] == 140
+        assert h2["end"] == 300
 
     def test_returns_none_for_bad_seq(self, tmpdir, sample_metadata_json):
         bad_fasta = tmpdir / "bad.fasta"
         bad_fasta.write_text(">bad\nMGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG\n")
         meta = json.loads(Path(sample_metadata_json).read_text())
         override = build_metadata_override_for_evolved("bad", str(bad_fasta), "test_cas13", meta)
+        assert override is None
+
+    def test_returns_none_for_close_motifs(self, tmpdir, sample_metadata_json):
+        """Two motifs < 150 residues apart should return None."""
+        close_fasta = tmpdir / "close.fasta"
+        seq = "MAAAAARAILXH" + "G" * 100 + "RVVVXH" + "G" * 40
+        close_fasta.write_text(f">close\n{seq}\n")
+        meta = json.loads(Path(sample_metadata_json).read_text())
+        override = build_metadata_override_for_evolved("close", str(close_fasta), "test_cas13", meta)
         assert override is None

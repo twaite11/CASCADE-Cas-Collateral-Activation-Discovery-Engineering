@@ -51,13 +51,26 @@ SEQRES_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "databases")
 
 
 def _get_next_baseline_from_queue(lineage_queue):
-    """Pop from queue until we find one with a valid Phase 1 structure. Returns (baseline, lineage_queue) or (None, lineage_queue) if none found."""
+    """
+    Pop from queue until we find one with a valid Phase 1 OFF-state structure.
+    PXDesign designs linkers in the OFF-state context (Enzyme + gRNA, dormant)
+    so that the designed linkers hyper-stabilize the dormant conformation.
+    Falls back to ON-state or legacy structure if OFF-state is unavailable.
+    Returns (baseline, lineage_queue) or (None, lineage_queue) if none found.
+    """
     while lineage_queue:
         baseline = lineage_queue.pop(0)
         baseline_id, _, _, crrna_lookup_id = baseline
-        structures = find_structure_files(os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred"))
-        if structures:
-            return (baseline_id, structures[0], None, crrna_lookup_id), lineage_queue
+        # Prefer OFF-state structure (Enzyme + gRNA only — dormant conformation)
+        off_structures = find_structure_files(os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_OFF_pred"))
+        if off_structures:
+            log.info(f"Using OFF-state structure for {baseline_id} (dormant conformation for PXDesign)")
+            return (baseline_id, off_structures[0], None, crrna_lookup_id), lineage_queue
+        # Fallback: legacy ternary structure (before OFF/ON split)
+        legacy_structures = find_structure_files(os.path.join(PHASE1_PDB_DIR, f"{baseline_id}_pred"))
+        if legacy_structures:
+            log.warning(f"No OFF-state structure for {baseline_id}; using legacy ternary structure")
+            return (baseline_id, legacy_structures[0], None, crrna_lookup_id), lineage_queue
         log.warning(f"No Phase 1 structure for {baseline_id}. Skipping to next lineage.")
     return None, lineage_queue
 
@@ -214,24 +227,44 @@ def save_rl_training_record(
 
 
 def build_metadata_override_for_evolved(baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata):
-    """Build metadata override dict for evolved variants not in variant_domain_metadata.json."""
+    """Build metadata override dict for evolved variants not in variant_domain_metadata.json.
+    Uses expanded HEPN boundaries (-60/+100) and minimum separation filtering."""
+    HEPN_UPSTREAM = 60
+    HEPN_DOWNSTREAM = 100
+    MIN_HEPN_SEPARATION = 150
     with open(baseline_fasta_path, 'r') as f:
         seq = "".join([l.strip() for l in f if not l.startswith(">")])
     motif = re.compile(r'R.{3,6}H')  # includes Cas13a (REFYH)
     matches = list(motif.finditer(seq))
     if len(matches) < 2:
         return None
-    hepn1_center = matches[0].start()
-    hepn2_center = matches[-1].start()
+    # Select HEPN1 (first motif in first 70%) and HEPN2 (last motif ≥150 residues from HEPN1)
+    seq_len = len(seq)
+    hepn1_center = None
+    hepn2_center = None
+    for m in matches:
+        if m.start() < seq_len * 0.70:
+            if hepn1_center is None:
+                hepn1_center = m.start()
+    for m in reversed(matches):
+        if hepn1_center is not None and m.start() - hepn1_center >= MIN_HEPN_SEPARATION:
+            hepn2_center = m.start()
+            break
+    if hepn1_center is None or hepn2_center is None:
+        return None
     parent_data = domain_metadata.get(crrna_lookup_id)
     if not parent_data:
         return None
+    hepn1_start = max(0, hepn1_center - HEPN_UPSTREAM)
+    hepn1_end = hepn1_center + HEPN_DOWNSTREAM
+    hepn2_start = max(hepn1_end, hepn2_center - HEPN_UPSTREAM)
+    hepn2_end = hepn2_center + HEPN_DOWNSTREAM
     return {
         baseline_id: {
             "sequence_length": len(seq),
             "domains": {
-                "HEPN1": {"start": max(0, hepn1_center - 30), "end": hepn1_center + 80},
-                "HEPN2": {"start": max(hepn1_center + 80, hepn2_center - 30), "end": hepn2_center + 80},
+                "HEPN1": {"start": hepn1_start, "end": hepn1_end},
+                "HEPN2": {"start": hepn2_start, "end": hepn2_end},
             },
             "crRNA_repeat_used": parent_data["crRNA_repeat_used"],
         }
@@ -253,7 +286,9 @@ def save_crrna_for_elite(variant_name, crrna_lookup_id, domain_metadata):
 
 def get_catalytic_histidine_indices(fasta_path):
     """Parses a FASTA to find the exact 1-based indices of the two catalytic Histidines.
-    Uses only the first sequence if the FASTA contains multiple entries."""
+    Uses only the first sequence if the FASTA contains multiple entries.
+    Applies positional and separation filtering to avoid spurious R...H matches."""
+    MIN_HEPN_SEPARATION = 150
     with open(fasta_path, 'r') as f:
         seq_lines = []
         for line in f:
@@ -269,9 +304,26 @@ def get_catalytic_histidine_indices(fasta_path):
     matches = list(motif.finditer(seq))
     if len(matches) < 2:
         return None, None
+
+    # Select HEPN1 (first motif in first 70%) and HEPN2 (last motif ≥150 residues from HEPN1)
+    seq_len = len(seq)
+    hepn1_match = None
+    for m in matches:
+        if m.start() < seq_len * 0.70:
+            hepn1_match = m
+            break
+    if hepn1_match is None:
+        return None, None
+    hepn2_match = None
+    for m in reversed(matches):
+        if m.start() - hepn1_match.start() >= MIN_HEPN_SEPARATION:
+            hepn2_match = m
+            break
+    if hepn2_match is None:
+        return None, None
         
     # H is at the end of each match. match.end() gives 1-based index (Biopython PDB uses 1-based).
-    return matches[0].end(), matches[-1].end()
+    return hepn1_match.end(), hepn2_match.end()
 
 def extract_mutations(baseline_id, variant_fasta, baseline_fasta_path=None):
     """Compares the new variant against the original sequence to map the mutations.

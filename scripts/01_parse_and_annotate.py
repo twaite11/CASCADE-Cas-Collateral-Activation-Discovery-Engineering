@@ -130,6 +130,12 @@ def identify_hepn_domains(conn):
     
     # R.{3,6}H: includes Cas13a (REFYH) while keeping Cas13e-like (R.{4,6}H)
     motif = re.compile(r'R.{3,6}H')
+    # HEPN domain window: -60 upstream of catalytic R, +100 downstream
+    # Real HEPN domains are ~150 residues; -60/+100 captures the full fold
+    HEPN_UPSTREAM = 60
+    HEPN_DOWNSTREAM = 100
+    # Minimum separation between HEPN1 and HEPN2 catalytic sites (residues)
+    MIN_HEPN_SEPARATION = 150
     processed = 0
     
     while True:
@@ -146,27 +152,59 @@ def identify_hepn_domains(conn):
                     UPDATE variants SET status = 'failed', reason = ? WHERE sequence_id = ?
                 ''', (f"Only {len(matches)} HEPN motifs found.", seq_id))
             else:
-                hepn1_center = matches[0].start()
-                hepn2_center = matches[-1].start()
+                # Filter: select HEPN1 and HEPN2 candidates with sufficient separation
+                # HEPN1 should be in the first 70% of the protein, HEPN2 in the last 60%
+                seq_len = len(sequence)
+                hepn1_center = None
+                hepn2_center = None
+                for m in matches:
+                    if m.start() < seq_len * 0.70:
+                        if hepn1_center is None:
+                            hepn1_center = m.start()
+                # Search from the end for HEPN2, must be far enough from HEPN1
+                for m in reversed(matches):
+                    if hepn1_center is not None and m.start() - hepn1_center >= MIN_HEPN_SEPARATION:
+                        hepn2_center = m.start()
+                        break
                 
-                update_cursor.execute('''
-                    UPDATE variants SET 
-                        hepn1_start = ?, hepn1_end = ?, 
-                        hepn2_start = ?, hepn2_end = ?, 
-                        status = 'success', reason = 'HEPN anchored'
-                    WHERE sequence_id = ?
-                ''', (
-                    max(0, hepn1_center - 30), hepn1_center + 80,
-                    max(hepn1_center + 80, hepn2_center - 30), hepn2_center + 80,
-                    seq_id
-                ))
+                if hepn1_center is None or hepn2_center is None:
+                    update_cursor.execute('''
+                        UPDATE variants SET status = 'failed', reason = ? WHERE sequence_id = ?
+                    ''', ("HEPN motifs found but insufficient separation or bad positions.", seq_id))
+                else:
+                    hepn1_start = max(0, hepn1_center - HEPN_UPSTREAM)
+                    hepn1_end = hepn1_center + HEPN_DOWNSTREAM
+                    hepn2_start = max(hepn1_end, hepn2_center - HEPN_UPSTREAM)
+                    hepn2_end = hepn2_center + HEPN_DOWNSTREAM
+                    
+                    update_cursor.execute('''
+                        UPDATE variants SET 
+                            hepn1_start = ?, hepn1_end = ?, 
+                            hepn2_start = ?, hepn2_end = ?, 
+                            status = 'success', reason = 'HEPN anchored'
+                        WHERE sequence_id = ?
+                    ''', (
+                        hepn1_start, hepn1_end,
+                        hepn2_start, hepn2_end,
+                        seq_id
+                    ))
             processed += 1
             
         conn.commit()
         log.info(f"  Processed {processed} sequences.")
 
 def generate_protenix_jsons(conn):
-    """Builds Protenix JSONs from successful DB entries by chunking."""
+    """
+    Builds Protenix JSONs from successful DB entries by chunking.
+    
+    Generates TWO JSONs per protein:
+      - {seq_id}_OFF.json: Enzyme + crRNA only (dormant/armed state)
+      - {seq_id}_ON.json:  Enzyme + crRNA + target RNA (activated state)
+    
+    The OFF-state structure is used as the PXDesign baseline so linkers are
+    designed to hyper-stabilize the dormant conformation.  The ON-state
+    structure tests whether target-RNA binding can overcome that stabilisation.
+    """
     os.makedirs(JSON_OUT_DIR, exist_ok=True)
     os.makedirs(os.path.dirname(METADATA_OUT_FILE), exist_ok=True)
     
@@ -180,7 +218,7 @@ def generate_protenix_jsons(conn):
     domain_metadata_export = {}
     generated_count = 0
     
-    print("Generating Protenix JSONs...")
+    print("Generating Protenix JSONs (OFF + ON per protein)...")
     
     while True:
         batch = cursor.fetchmany(BATCH_SIZE)
@@ -194,10 +232,25 @@ def generate_protenix_jsons(conn):
             dr_rna = dna_repeat.replace("T", "U").replace("t", "u")
             crrna_seq = dr_rna + DUMMY_SPACER_RNA
             
-            # Protenix expects proteinChain/rnaSequence (not protein/rna)
-            protenix_payload = [
+            # --- OFF State: Enzyme + gRNA (armed but dormant) ---
+            # PXDesign uses this structure to design linkers that hyper-stabilize
+            # the dormant conformation (HEPN domains far apart).
+            off_payload = [
                 {
-                    "name": seq_id,
+                    "name": f"{seq_id}_OFF",
+                    "sequences": [
+                        {"proteinChain": {"sequence": protein_seq, "count": 1}},
+                        {"rnaSequence": {"sequence": crrna_seq, "count": 1}},
+                    ]
+                }
+            ]
+            
+            # --- ON State: Enzyme + gRNA + Target RNA (activated) ---
+            # Evaluates whether target RNA binding can yank the linkers into
+            # the active conformation (HEPN domains close together).
+            on_payload = [
+                {
+                    "name": f"{seq_id}_ON",
                     "sequences": [
                         {"proteinChain": {"sequence": protein_seq, "count": 1}},
                         {"rnaSequence": {"sequence": crrna_seq, "count": 1}},
@@ -206,10 +259,12 @@ def generate_protenix_jsons(conn):
                 }
             ]
             
-            # Write JSON payload
-            out_filename = os.path.join(JSON_OUT_DIR, f"{seq_id}.json")
-            with open(out_filename, 'w') as out_f:
-                json.dump(protenix_payload, out_f, indent=2)
+            off_filename = os.path.join(JSON_OUT_DIR, f"{seq_id}_OFF.json")
+            on_filename = os.path.join(JSON_OUT_DIR, f"{seq_id}_ON.json")
+            with open(off_filename, 'w') as out_f:
+                json.dump(off_payload, out_f, indent=2)
+            with open(on_filename, 'w') as out_f:
+                json.dump(on_payload, out_f, indent=2)
                 
             # Save exact HEPN windows to metadata
             domain_metadata_export[seq_id] = {

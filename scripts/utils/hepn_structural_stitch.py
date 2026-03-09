@@ -6,6 +6,10 @@ the wild-type HEPN1 and HEPN2 sequences at the correct indices into the designed
 All domain coordinates (hepn1_start, hepn1_end, etc.) are 0-based Python-slice indices:
     baseline_full_seq[hepn1_start : hepn1_end]  →  HEPN1 domain sequence
 This matches the output of 01_parse_and_annotate.py which uses regex .start() (0-based).
+
+The C-terminal tail (residues after HEPN2) is preserved from the baseline to maintain
+protein stability and correct folding — Cas13 proteins have residues after HEPN2 that
+contribute to structural integrity.
 """
 import logging
 
@@ -21,10 +25,11 @@ def stitch_hepn_into_binder(
     Insert wild-type HEPN1 and HEPN2 into the designed binder sequence.
     The binder has no native gaps; we precisely index where to insert the HEPN domains.
 
-    full = rec + binder[:linker1_len] + hepn1 + binder[linker1_len:linker1_len+linker2_len] + hepn2
+    full = rec + binder[:linker1_len] + hepn1 + binder[linker1_len:linker1_len+linker2_len] + hepn2 + c_terminal_tail
 
     All coords are 0-based (Python slice convention).
-    Returns stitched full sequence (rec + linkers + hepn1 + linkers + hepn2), or None on failure.
+    Returns stitched full sequence, or None on failure.
+    The C-terminal tail (baseline residues after hepn2_end) is always preserved.
     """
     rec_end = coords["rec_end"]
     linker1_len = coords["linker1_len"]
@@ -43,6 +48,8 @@ def stitch_hepn_into_binder(
     hepn1_seq = baseline_full_seq[hepn1_start : hepn1_end]
     hepn2_seq = baseline_full_seq[hepn2_start : hepn2_end]
     rec_seq = baseline_full_seq[:rec_end]
+    # Preserve C-terminal tail after HEPN2 (contributes to stability/folding)
+    c_terminal_tail = baseline_full_seq[hepn2_end:]
 
     if expected_binder_len == 0:
         # No native linkers; treat entire binder as connector between REC and HEPN1
@@ -60,5 +67,5 @@ def stitch_hepn_into_binder(
         linker1 = binder_seq[:linker1_len]
         linker2 = binder_seq[linker1_len : linker1_len + linker2_len]
 
-    full = rec_seq + linker1 + hepn1_seq + linker2 + hepn2_seq
+    full = rec_seq + linker1 + hepn1_seq + linker2 + hepn2_seq + c_terminal_tail
     return full

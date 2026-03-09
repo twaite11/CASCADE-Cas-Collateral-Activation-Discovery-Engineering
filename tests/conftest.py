@@ -39,30 +39,39 @@ ATOM      2  CA  HIS A  50      15.000   0.000   0.000  1.00  0.00           C
 END
 """
 
-# Sequence with R.{4,6}H motif: RAILXH and RVVVXH (1-based His at 12 and 37)
-FASTA_WITH_HEPN = """>test_cas13
-MAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG
-"""
+# --- Biologically realistic test sequences ---
+# These sequences must have TWO R.{3,6}H motifs separated by ≥150 residues
+# (matching the MIN_HEPN_SEPARATION filter in identify_hepn_domains and
+# get_catalytic_histidine_indices).
+#
+# Layout (0-based): HEPN1 motif at ~pos 6 (RAILXH), HEPN2 motif at ~pos 200 (RVVVXH)
+# Separation: 200 - 6 = 194 residues → passes MIN_HEPN_SEPARATION (150)
+# Total length: ~250 residues
 
-# Variant with G->P at position 13 (1-based)
-FASTA_VARIANT_SINGLE_MUT = """>test_cas13_variant
-MAAAAARAILXHPGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG
-"""
+_PRE_HEPN1 = "MAAAAA"           # 6 residues (NTD region)
+_HEPN1_MOTIF = "RAILXH"         # 6 residues (HEPN1 catalytic motif, R at pos 6)
+_INTER_DOMAIN = "G" * 188       # 188 residues (inter-domain: Helical-2 + IDL + HEPN2-upstream)
+_HEPN2_MOTIF = "RVVVXH"         # 6 residues (HEPN2 catalytic motif, R at pos 200)
+_C_TERMINAL = "G" * 44          # 44 residues (C-terminal tail)
 
-# Baseline for mutation comparison
-FASTA_BASELINE = """>baseline_id
-MAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG
-"""
+_TEST_SEQ = _PRE_HEPN1 + _HEPN1_MOTIF + _INTER_DOMAIN + _HEPN2_MOTIF + _C_TERMINAL
+assert len(_TEST_SEQ) == 250, f"Expected 250, got {len(_TEST_SEQ)}"
+
+# Variant with G->P at position 13 (1-based), which is in the inter-domain region
+_VARIANT_SEQ = _TEST_SEQ[:12] + "P" + _TEST_SEQ[13:]
+
+FASTA_WITH_HEPN = f">test_cas13\n{_TEST_SEQ}\n"
+FASTA_VARIANT_SINGLE_MUT = f">test_cas13_variant\n{_VARIANT_SEQ}\n"
+FASTA_BASELINE = f">baseline_id\n{_TEST_SEQ}\n"
 
 # Sequence with only one HEPN motif (should fail)
-FASTA_ONE_HEPN = """>bad_seq
-MAAAAARAILXHGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
-"""
+FASTA_ONE_HEPN = ">bad_seq\nMAAAAARAILXHGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG\n"
 
 # Sequence with no HEPN motif
-FASTA_NO_HEPN = """>no_hepn
-MGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
-"""
+FASTA_NO_HEPN = ">no_hepn\nMGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG\n"
+
+# Sequence with two motifs but too close together (< 150 residues apart)
+FASTA_CLOSE_HEPN = ">close_hepn\nMAAAAARAILXH" + "G" * 100 + "RVVVXH" + "G" * 40 + "\n"
 
 
 @pytest.fixture
@@ -82,7 +91,7 @@ def data_dir(tmpdir):
 
 @pytest.fixture
 def sample_fasta(data_dir):
-    """Sample FASTA with HEPN motifs."""
+    """Sample FASTA with HEPN motifs (250 residues, HEPN1 at 6, HEPN2 at 200)."""
     p = data_dir / "test_hits.fasta"
     p.write_text(FASTA_WITH_HEPN)
     return str(p)
@@ -101,22 +110,25 @@ test_cas13,AAACCCGGGTTT,SRR123,0.9
 
 @pytest.fixture
 def sample_metadata_json(tmpdir):
-    """Variant domain metadata as produced by 01_parse_and_annotate."""
+    """Variant domain metadata as produced by 01_parse_and_annotate.
+    Uses expanded HEPN boundaries: -60 upstream, +100 downstream of catalytic R."""
     p = tmpdir / "variant_domain_metadata.json"
+    # HEPN1 R is at 0-based pos 6; domain = [max(0,6-60), 6+100] = [0, 106]
+    # HEPN2 R is at 0-based pos 200; domain = [max(106,200-60), 200+100] = [140, 300]
     meta = {
         "test_cas13": {
-            "sequence_length": 45,
+            "sequence_length": 250,
             "domains": {
-                "HEPN1": {"start": 0, "end": 85},
-                "HEPN2": {"start": 20, "end": 105},
+                "HEPN1": {"start": 0, "end": 106},
+                "HEPN2": {"start": 140, "end": 300},
             },
             "crRNA_repeat_used": "AAACCCGGGUUU",
         },
         "baseline_id": {
-            "sequence_length": 45,
+            "sequence_length": 250,
             "domains": {
-                "HEPN1": {"start": 0, "end": 85},
-                "HEPN2": {"start": 20, "end": 105},
+                "HEPN1": {"start": 0, "end": 106},
+                "HEPN2": {"start": 140, "end": 300},
             },
             "crRNA_repeat_used": "AAACCCGGGUUU",
         },
@@ -172,7 +184,7 @@ def baseline_json(tmpdir, sample_metadata_json):
     payload = [{
         "name": "baseline_id",
         "sequences": [
-            {"proteinChain": {"sequence": "MAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG", "count": 1}},
+            {"proteinChain": {"sequence": _TEST_SEQ, "count": 1}},
             {"rnaSequence": {"sequence": crrna, "count": 1}},
             {"rnaSequence": {"sequence": "AAAAAAACGUACGUACGUACGUCAGUCGACAAAAAA", "count": 1}},
         ],

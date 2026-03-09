@@ -192,7 +192,14 @@ def _build_pxdesign_yaml(
     coords: dict,
     output_dir: str,
 ) -> str:
-    """Build PXDesign YAML: REC crop, RNA chains B/C as fixed context, linker-only binder_length."""
+    """
+    Build PXDesign YAML: REC crop, RNA chains as fixed context, linker-only binder_length.
+    
+    The baseline structure should be an OFF-state prediction (Enzyme + gRNA only)
+    so that PXDesign designs linkers that hyper-stabilize the dormant conformation.
+    With an OFF-state structure, only chains A (protein) and B (crRNA) exist —
+    no target RNA (chain C), ensuring linkers are designed for the dormant context.
+    """
     yaml_path = os.path.join(output_dir, f"{variant_id}_pxdesign_input.yaml")
     abs_structure = os.path.abspath(baseline_structure)
     if not os.path.exists(abs_structure):
@@ -209,9 +216,12 @@ def _build_pxdesign_yaml(
     }
     chain_ids = _get_structure_chain_ids(abs_structure)
     if "B" in chain_ids:
-        chains["B"] = "all"
+        chains["B"] = "all"  # crRNA — always present as fixed context
     if "C" in chain_ids:
-        chains["C"] = "all"
+        chains["C"] = "all"  # target RNA — only present if ON-state baseline (not preferred)
+        log.warning("Baseline structure contains chain C (target RNA). "
+                     "Prefer using OFF-state (Enzyme+gRNA) baseline for PXDesign "
+                     "to design linkers that hyper-stabilize the dormant conformation.")
 
     cfg = {
         "task_name": variant_id,

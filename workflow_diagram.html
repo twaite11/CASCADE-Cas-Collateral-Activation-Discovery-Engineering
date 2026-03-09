@@ -73,9 +73,12 @@
   <h1>CASCADE &mdash; Active Learning Evolution Loop</h1>
   <p class="subtitle">
     From metagenomic Cas13 hits to predicted allosteric suicide switches.
-    PXDesign designs <strong>linkers only</strong> (REC + HEPN domains frozen from wild-type).
+    Phase 1 generates <strong>both OFF-state</strong> (Enzyme + gRNA, dormant) and <strong>ON-state</strong> (Enzyme + gRNA + target RNA, activated) structures.
+    PXDesign designs <strong>linkers only</strong> using the <strong>OFF-state</strong> structure as baseline &mdash; so linkers hyper-stabilize the dormant conformation.
+    HEPN domains use expanded boundaries (<strong>&minus;60/+100</strong> around catalytic R) with &ge;150 residue separation filtering.
     X residues resolved via baseline lookup or Glycine fallback.
     RL bias matrix applied post-stitching to steer linker amino acids toward higher fitness.
+    <strong>C-terminal tail</strong> is always preserved from the wild-type sequence.
     The <strong>global best protein</strong> is always used as the next baseline &mdash; never regressing.
     Fitness = HEPN shift + ipTM + AF2-IG &minus; specificity penalties (1/2/3-mismatch off-targets).
   </p>
@@ -88,10 +91,14 @@ graph TD
         MetaCSV["deep_hits_*_metadata.csv<br/>Native crRNA k-mers"]
         Mined --> Parse
         MetaCSV --> Parse
-        Parse["01_parse_and_annotate.py<br/>SQLite DB + HEPN anchoring<br/>0-based domain coords + JSONs"]
-        Parse --> Screen
-        Screen["02_run_screening.sh<br/>Protenix-mini filter"]
-        Screen --> Baselines["phase1_screening/<br/>Baseline CIFs/PDBs"]
+        Parse["01_parse_and_annotate.py<br/>SQLite DB + HEPN anchoring<br/>Expanded: -60/+100 boundaries<br/>≥150 residue separation filter<br/>Positional: HEPN1 in first 70%"]
+        Parse --> JSONGen["Generate OFF + ON JSONs<br/>OFF: Enzyme + gRNA (dormant)<br/>ON: Enzyme + gRNA + target RNA"]
+        JSONGen --> Screen
+        Screen["02_run_screening.sh<br/>Protenix-mini: OFF + ON per baseline"]
+        Screen --> OFFStruct["OFF Structures<br/>phase1_screening/*_OFF_pred/<br/>Dormant: HEPN domains apart"]
+        Screen --> ONStruct["ON Structures<br/>phase1_screening/*_ON_pred/<br/>Activated: HEPN domains close"]
+        OFFStruct --> Baselines["Phase 1 Baselines<br/>OFF-state used for PXDesign<br/>ON-state used for validation"]
+        ONStruct --> Baselines
         Validate["validate_crispr_repeats.py<br/>Optional: validated_baseline_ids.txt"]
         Screen -.->|optional| Validate
         MSA["02b_rerun_top_with_msa.sh<br/>Optional: MSA re-run for top N"]
@@ -99,20 +106,20 @@ graph TD
     end
 
     Parse -.->|variant_domain_metadata.json| Loop
-    Baselines -.->|Structure templates| PXDesign
+    OFFStruct -.->|"OFF-state template (dormant)"| PXDesign
     Validate -.->|Restricts lineage| Loop
 
     %% ========== PHASE 2: EVOLUTION LOOP ==========
     subgraph Loop["Phase 2 &mdash; Active Learning Evolution Loop (evolution_orchestrator.py)"]
         GlobalBest["Global Best Tracker<br/>All-time highest fitness protein<br/>Always used as next baseline"]
-        Baseline["Current Baseline<br/>id + structure + FASTA + crrna_lookup"]
-        LineageQueue["Lineage Queue<br/>Validated baselines, fallback on failure"]
+        Baseline["Current Baseline<br/>id + OFF-state structure + FASTA + crrna_lookup"]
+        LineageQueue["Lineage Queue<br/>Prefers OFF-state structures<br/>Falls back to legacy ternary"]
         GlobalBest -->|"Revert if gen doesn't beat"| Baseline
         LineageQueue -.->|On exhaustion| Baseline
 
         subgraph Gen["Variant Generation (03_pxdesign_wrapper.py)"]
-            PXDesign["pxdesign infer<br/>Frozen: REC + HEPN<br/>Designed: linker1 + linker2"]
-            Stitch["stitch_hepn_into_binder<br/>0-based coords: seq[start:end]<br/>Insert WT HEPN1 &amp; HEPN2"]
+            PXDesign["pxdesign infer<br/>Baseline: OFF-state structure<br/>Frozen: REC + HEPN1 + HEPN2<br/>Designed: linker1 + linker2<br/>No target RNA (chain C) in context"]
+            Stitch["stitch_hepn_into_binder<br/>0-based coords: seq[start:end]<br/>Insert WT HEPN1 &amp; HEPN2<br/>Preserve C-terminal tail"]
             ResolveX["_resolve_unknown_residues<br/>X → baseline AA or Glycine<br/>Eliminates all X characters"]
             ApplyBias["_apply_bias_to_sequence<br/>RL bias from EvolutionGym<br/>Modifies ONLY linker regions<br/>Preserves HEPN catalytic sites"]
             Bias["mpnn_bias_gen_X.json<br/>RL mutation weights<br/>(substitutions only, no ins/del)"]
@@ -128,7 +135,7 @@ graph TD
 
         subgraph MutCheck["Mutation Analysis"]
             MutTrack["extract_mutations<br/>Compare variant vs baseline<br/>pos_AA (sub), pos_del, pos_AA_ins"]
-            HEPNidx["get_catalytic_histidine_indices<br/>R.3,6.H motif → 1-based His positions"]
+            HEPNidx["get_catalytic_histidine_indices<br/>R.3,6.H motif with ≥150 sep filter<br/>HEPN1 in first 70% of protein<br/>→ 1-based His positions"]
         end
 
         MutTrack --> GenJSON
@@ -200,8 +207,10 @@ graph TD
     classDef file fill:#1a202c,stroke:#94a3b8,color:#e2e8f0
     classDef best fill:#065f46,stroke:#34d399,color:#fff
     classDef resolve fill:#164e63,stroke:#22d3ee,color:#fff
+    classDef phase1struct fill:#1e3a5f,stroke:#38bdf8,color:#fff
     class Mined,MetaCSV,Baselines,Variants,Bias,PDBout,JSONout file
-    class Parse,Screen,Validate,MSA bootstrap
+    class Parse,Screen,Validate,MSA,JSONGen bootstrap
+    class OFFStruct,ONStruct phase1struct
     class PXDesign,Stitch gen
     class ResolveX,ApplyBias resolve
     class GenJSON,ProtenixMini,ProtenixBase,ProtenixOT,OffTarget eval
@@ -214,6 +223,7 @@ graph TD
 
   <div class="legend">
     <div class="legend-item"><div class="legend-dot" style="background:#1e3a5f;border:1px solid #60a5fa;"></div> Bootstrap</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#1e3a5f;border:1px solid #38bdf8;"></div> OFF/ON Structures</div>
     <div class="legend-item"><div class="legend-dot" style="background:#14532d;border:1px solid #4ade80;"></div> Generation</div>
     <div class="legend-item"><div class="legend-dot" style="background:#164e63;border:1px solid #22d3ee;"></div> X-Resolution &amp; RL Bias</div>
     <div class="legend-item"><div class="legend-dot" style="background:#2d3748;border:1px solid #4fd1c5;"></div> Evaluation</div>
