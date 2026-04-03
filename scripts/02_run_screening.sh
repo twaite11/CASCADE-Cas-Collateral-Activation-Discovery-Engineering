@@ -57,15 +57,19 @@ run_single() {
 
     # Step 2: Protenix-Mini prediction
     log_ts "[2/2] Running Protenix-Mini prediction (may take 2-10 min per hit)..."
-    CUDA_VISIBLE_DEVICES="$gpu_id" protenix predict \
-        --input "$PREDICT_INPUT" \
-        --out_dir "$pred_dir" \
-        --model_name "protenix_mini_default_v0.5.0" \
+    CUDA_VISIBLE_DEVICES="$gpu_id" protenix pred \
+        -i "$PREDICT_INPUT" \
+        -o "$pred_dir" \
+        -n "protenix_mini_default_v0.5.0" \
         --use_msa "$USE_MSA" \
         --use_default_params true \
         > "$OUTPUT_DIR/${base_name}_pred.log" 2>&1
 
-    log_ts "Completed $base_name. Outputs saved to $pred_dir/"
+    if [ $? -ne 0 ]; then
+        log_ts "WARNING: protenix pred failed for $base_name. Check $OUTPUT_DIR/${base_name}_pred.log"
+    else
+        log_ts "Completed $base_name. Outputs saved to $pred_dir/"
+    fi
 }
 
 if [ "$NUM_GPUS" -le 1 ]; then

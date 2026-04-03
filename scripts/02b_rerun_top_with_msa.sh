@@ -107,10 +107,10 @@ for (( i=0; i<count; i++ )); do
     fi
 
     log_ts "[2/2] Running Protenix-Mini with MSA for $bid (replacing Phase 1 PDB)..."
-    protenix predict \
-        --input "$MSA_JSON" \
-        --out_dir "$OUTPUT_DIR/${bid}_pred" \
-        --model_name "protenix_mini_default_v0.5.0" \
+    protenix pred \
+        -i "$MSA_JSON" \
+        -o "$OUTPUT_DIR/${bid}_pred" \
+        -n "protenix_mini_default_v0.5.0" \
         --use_msa true \
         --use_default_params true \
         > "$OUTPUT_DIR/${bid}_pred_msa.log" 2>&1
