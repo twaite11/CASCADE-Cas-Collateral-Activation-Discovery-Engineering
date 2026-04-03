@@ -1,0 +1,17 @@
+[package]
+name = "cascade_sequtils"
+version = "0.1.0"
+edition = "2021"
+description = "Sequence analysis utilities for CASCADE: mutation extraction, motif finding, k-mer validation"
+
+[[bin]]
+name = "cascade_sequtils"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+csv = "1"
+glob = "0.3"

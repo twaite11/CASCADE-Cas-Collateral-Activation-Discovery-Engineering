@@ -1,6 +1,8 @@
 import json
 import os
 import glob
+import shutil
+import subprocess
 import numpy as np
 from Bio.PDB import PDBParser, MMCIFParser, PDBIO
 import warnings
@@ -8,6 +10,30 @@ from Bio import BiopythonWarning
 
 # Suppress minor PDB format warnings for cleaner RunPod logs
 warnings.simplefilter('ignore', BiopythonWarning)
+
+_RUST_STRUCTSCORE_BIN = shutil.which("cascade_structscore")
+if not _RUST_STRUCTSCORE_BIN:
+    _candidate = os.path.join(os.path.dirname(__file__), "..", "..", "rust", "target", "release", "cascade_structscore")
+    if os.name == "nt":
+        _candidate += ".exe"
+    if os.path.isfile(_candidate):
+        _RUST_STRUCTSCORE_BIN = _candidate
+
+
+def _run_rust_structscore(args, timeout=60):
+    """Run cascade_structscore with args. Returns stdout string on success, None on failure."""
+    if not _RUST_STRUCTSCORE_BIN:
+        return None
+    try:
+        r = subprocess.run(
+            [_RUST_STRUCTSCORE_BIN] + args,
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return None
 
 
 def find_structure_files(base_dir):
@@ -17,6 +43,12 @@ def find_structure_files(base_dir):
     """
     if not base_dir or not os.path.isdir(base_dir):
         return []
+    rust_out = _run_rust_structscore(["find-structures", "--dir", str(base_dir)])
+    if rust_out is not None:
+        try:
+            return json.loads(rust_out)
+        except (json.JSONDecodeError, TypeError):
+            pass
     cifs = sorted(glob.glob(os.path.join(base_dir, "**", "*.cif"), recursive=True))
     if cifs:
         return cifs
@@ -39,7 +71,14 @@ def extract_protenix_scores(summary_json_path):
     """
     if not os.path.exists(summary_json_path):
         raise FileNotFoundError(f"Protenix summary file not found: {summary_json_path}")
-        
+
+    rust_out = _run_rust_structscore(["extract-scores", "--summary", str(summary_json_path)])
+    if rust_out is not None:
+        try:
+            return json.loads(rust_out)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     with open(summary_json_path, 'r') as f:
         data = json.load(f)
         
@@ -67,22 +106,31 @@ def calculate_hepn_shift(structure_path, hepn1_his_idx, hepn2_his_idx, protein_c
     if not os.path.exists(structure_path):
         raise FileNotFoundError(f"Structure file not found: {structure_path}")
 
+    rust_out = _run_rust_structscore([
+        "hepn-distance",
+        "--structure", str(structure_path),
+        "--h1-idx", str(hepn1_his_idx),
+        "--h2-idx", str(hepn2_his_idx),
+        "--chain", str(protein_chain_id),
+    ])
+    if rust_out is not None:
+        try:
+            return float(rust_out)
+        except (ValueError, TypeError):
+            pass
+
     structure = _load_structure(structure_path)
     
     try:
-        # Navigate the PDB hierarchy: Structure -> Model (0) -> Chain -> Residue -> Atom
         model = structure[0]
         chain = model[protein_chain_id]
         
-        # Biopython parses 1-based PDB residue indices. Ensure your SQLite indices match.
         res1 = chain[hepn1_his_idx]
         res2 = chain[hepn2_his_idx]
         
-        # Extract the 3D numpy coordinate arrays for the Alpha-Carbons (CA)
         coord1 = res1['CA'].get_coord()
         coord2 = res2['CA'].get_coord()
         
-        # Calculate the Euclidean distance
         distance_angstroms = np.linalg.norm(coord1 - coord2)
         return float(distance_angstroms)
         

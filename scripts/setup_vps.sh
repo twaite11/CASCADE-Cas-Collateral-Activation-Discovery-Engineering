@@ -74,6 +74,20 @@ mkdir -p "$PROJECT_ROOT/metadata"
 mkdir -p "$PROJECT_ROOT/databases"
 mkdir -p "$PROJECT_ROOT/logs"
 
+# Optional: Build Rust accelerators if cargo is available
+if command -v cargo &>/dev/null; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Building Rust accelerators (optional, speeds up CPU-bound pipeline steps)..."
+    cd "$PROJECT_ROOT/rust"
+    cargo build --release 2>&1 | tail -5
+    echo "  Rust binaries: $PROJECT_ROOT/rust/target/release/cascade_{ingest,sequtils,structscore}"
+    # Add to PATH for this session
+    export PATH="$PROJECT_ROOT/rust/target/release:$PATH"
+    cd "$PROJECT_ROOT"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] cargo not found; skipping Rust accelerators (pipeline will use Python fallbacks)."
+    echo "  To install: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+fi
+
 echo ""
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Setup complete."
 echo ""

@@ -1,0 +1,18 @@
+[package]
+name = "cascade_ingest"
+version = "0.1.0"
+edition = "2021"
+description = "Fast FASTA/CSV ingestion, HEPN motif scanning, and Protenix JSON generation for CASCADE"
+
+[[bin]]
+name = "cascade_ingest"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+csv = "1"
+glob = "0.3"

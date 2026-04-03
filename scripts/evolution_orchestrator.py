@@ -2,6 +2,7 @@ import os
 import json
 import re
 import shutil
+import subprocess
 import gc
 import time
 import logging
@@ -48,6 +49,31 @@ RL_TRAINING_DATASET = os.path.join(GYM_DIR, "rl_training_dataset.jsonl")
 VALIDATED_IDS_FILE = "../outputs/validated_baseline_ids.txt"  # From validate_crispr_repeats.py; restricts lineage to validated repeats
 # Optional: set to path to databases/ for Protenix inputprep (improves MSA quality)
 SEQRES_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "databases")
+
+
+_RUST_SEQUTILS_BIN = shutil.which("cascade_sequtils")
+if not _RUST_SEQUTILS_BIN:
+    _candidate = os.path.join(os.path.dirname(__file__), "..", "rust", "target", "release", "cascade_sequtils")
+    if os.name == "nt":
+        _candidate += ".exe"
+    if os.path.isfile(_candidate):
+        _RUST_SEQUTILS_BIN = _candidate
+
+
+def _run_rust_sequtils(args, timeout=30):
+    """Run cascade_sequtils with args. Returns stdout string on success, None on failure."""
+    if not _RUST_SEQUTILS_BIN:
+        return None
+    try:
+        r = subprocess.run(
+            [_RUST_SEQUTILS_BIN] + args,
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return None
 
 
 def _get_next_baseline_from_queue(lineage_queue):
@@ -254,29 +280,44 @@ def save_crrna_for_elite(variant_name, crrna_lookup_id, domain_metadata):
 def get_catalytic_histidine_indices(fasta_path):
     """Parses a FASTA to find the exact 1-based indices of the two catalytic Histidines.
     Uses only the first sequence if the FASTA contains multiple entries."""
+    rust_out = _run_rust_sequtils(["find-histidines", "--fasta", str(fasta_path)])
+    if rust_out is not None:
+        try:
+            data = json.loads(rust_out)
+            return data.get("h1"), data.get("h2")
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     with open(fasta_path, 'r') as f:
         seq_lines = []
         for line in f:
             line = line.strip()
             if line.startswith(">"):
                 if seq_lines:
-                    break  # Stop after first sequence
+                    break
                 continue
             seq_lines.append(line)
         seq = "".join(seq_lines)
 
-    motif = re.compile(r'R.{3,6}H')  # includes Cas13a (REFYH)
+    motif = re.compile(r'R.{3,6}H')
     matches = list(motif.finditer(seq))
     if len(matches) < 2:
         return None, None
         
-    # H is at the end of each match. match.end() gives 1-based index (Biopython PDB uses 1-based).
     return matches[0].end(), matches[-1].end()
 
 def extract_mutations(baseline_id, variant_fasta, baseline_fasta_path=None):
     """Compares the new variant against the original sequence to map the mutations.
     Handles length mismatches (indels) by padding the shorter sequence.
     baseline_fasta_path: if provided, load baseline sequence from FASTA (for evolved baselines)."""
+    baseline_file = baseline_fasta_path if (baseline_fasta_path and os.path.exists(baseline_fasta_path)) else os.path.join(BASE_JSON_DIR, f"{baseline_id}.json")
+    rust_out = _run_rust_sequtils(["extract-mutations", "--baseline", str(baseline_file), "--variant", str(variant_fasta)])
+    if rust_out is not None:
+        try:
+            return json.loads(rust_out)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     if baseline_fasta_path and os.path.exists(baseline_fasta_path):
         with open(baseline_fasta_path, 'r') as f:
             baseline_seq = "".join([l.strip() for l in f if not l.startswith(">")])
@@ -289,7 +330,6 @@ def extract_mutations(baseline_id, variant_fasta, baseline_fasta_path=None):
     with open(variant_fasta, 'r') as f:
         v_seq = "".join([l.strip() for l in f.readlines() if not l.startswith(">")])
 
-    # Pad shorter sequence so we can detect all substitutions and terminal indels
     max_len = max(len(baseline_seq), len(v_seq))
     b_padded = baseline_seq.ljust(max_len, "-")
     v_padded = v_seq.ljust(max_len, "-")

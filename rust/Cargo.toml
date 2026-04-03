@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "cascade_ingest",
+    "cascade_sequtils",
+    "cascade_structscore",
+]
+resolver = "2"

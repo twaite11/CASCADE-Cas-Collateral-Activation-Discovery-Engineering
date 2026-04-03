@@ -3,7 +3,9 @@ import json
 import os
 import re
 import glob
+import shutil
 import sqlite3
+import subprocess
 import logging
 
 logging.basicConfig(
@@ -224,7 +226,39 @@ def generate_protenix_jsons(conn):
 
     return generated_count
 
+_RUST_INGEST_BIN = shutil.which("cascade_ingest")
+if not _RUST_INGEST_BIN:
+    _candidate = os.path.join(os.path.dirname(__file__), "..", "rust", "target", "release", "cascade_ingest")
+    if os.name == "nt":
+        _candidate += ".exe"
+    if os.path.isfile(_candidate):
+        _RUST_INGEST_BIN = _candidate
+
+
+def _try_rust_ingest():
+    """Attempt to run the Rust-accelerated ingest pipeline. Returns True on success."""
+    if not _RUST_INGEST_BIN:
+        return False
+    try:
+        result = subprocess.run(
+            [_RUST_INGEST_BIN,
+             "--data-dir", DATA_DIR,
+             "--db-file", DB_FILE,
+             "--json-out-dir", JSON_OUT_DIR,
+             "--metadata-out-file", METADATA_OUT_FILE],
+            capture_output=False, text=True, timeout=600,
+        )
+        return result.returncode == 0
+    except Exception as e:
+        log.warning(f"Rust accelerator failed ({e}), falling back to Python.")
+        return False
+
+
 def main():
+    if _try_rust_ingest():
+        log.info("Rust-accelerated ingest completed successfully.")
+        return
+
     log.info("Initializing SwitchBlade-Cas13 Local SQLite DB...")
     conn = init_db()
     

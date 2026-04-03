@@ -253,6 +253,11 @@ CASCADE/
 │       ├── deep_hits_*.fasta           #   Cas13e-like protein ORFs
 │       └── deep_hits_*_metadata.csv    #   SRA accessions + crRNA k-mers
 │
+├── 📁 rust/                            # Optional Rust accelerators (cargo build --release)
+│   ├── cascade_ingest/                 #   FASTA/CSV → SQLite + HEPN scanning + JSON gen
+│   ├── cascade_sequtils/               #   Mutation extraction, motif finding, k-mer validation
+│   └── cascade_structscore/            #   CIF/PDB parsing, CA-CA distance, score extraction
+│
 ├── 📁 scripts/
 │   ├── 🔧 setup_dual_env.sh           # Creates cascade + pxdesign conda envs
 │   ├── 🔧 setup_vps.sh                # Simple single-env venv setup
@@ -301,6 +306,25 @@ CASCADE/
         ├── *_ternary_complex.cif       #   Predicted ternary structures
         └── *_crRNA.fasta               #   Native crRNA sequences
 ```
+
+---
+
+## ⚡ Rust Accelerators (Optional)
+
+Three compiled Rust CLI tools accelerate the CPU-bound portions of the pipeline. When present on `PATH` (or in `rust/target/release/`), each Python script automatically delegates to the Rust binary and falls back to the Python implementation if unavailable. **Zero breaking changes.**
+
+```bash
+# Build (requires Rust toolchain)
+cd rust && cargo build --release
+```
+
+| Binary | Accelerates | Speedup |
+|:-------|:------------|:--------|
+| `cascade_ingest` | Phase 1a: FASTA/CSV parsing, HEPN regex scanning, SQLite bulk insert, JSON generation | 10-50x |
+| `cascade_sequtils` | Evolution loop: mutation extraction, histidine motif finding, CRISPR repeat k-mer validation | 5-20x |
+| `cascade_structscore` | Evolution loop: CIF/PDB structure parsing, CA-CA distance calculation, score extraction | 5-15x |
+
+> `setup_vps.sh` automatically builds these if `cargo` is installed. GPU-bound steps (Protenix, PXDesign) are unaffected.
 
 ---
 

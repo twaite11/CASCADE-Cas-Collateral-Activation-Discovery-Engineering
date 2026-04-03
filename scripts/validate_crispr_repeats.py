@@ -13,6 +13,8 @@ with plausible CRISPR repeats. (02 screening processes all; filtering is at evol
 import csv
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -144,7 +146,35 @@ def load_validated_ids(path: Path = None) -> set:
     return ids
 
 
+_RUST_SEQUTILS_BIN = shutil.which("cascade_sequtils")
+if not _RUST_SEQUTILS_BIN:
+    _candidate = SCRIPT_DIR.parent / "rust" / "target" / "release" / "cascade_sequtils"
+    if os.name == "nt":
+        _candidate = Path(str(_candidate) + ".exe")
+    if _candidate.is_file():
+        _RUST_SEQUTILS_BIN = str(_candidate)
+
+
+def _try_rust_validate():
+    """Attempt to run the Rust-accelerated repeat validation. Returns True on success."""
+    if not _RUST_SEQUTILS_BIN:
+        return False
+    try:
+        result = subprocess.run(
+            [_RUST_SEQUTILS_BIN, "validate-repeats",
+             "--data-dir", str(DATA_DIR),
+             "--output-dir", str(OUTPUT_DIR)],
+            capture_output=False, text=True, timeout=600,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def main():
+    if _try_rust_validate():
+        return
+
     # Handle CSV files with very large fields (e.g. long repeat_domains)
     csv.field_size_limit(min(2**31 - 1, sys.maxsize))
 
