@@ -27,6 +27,10 @@ desktop.ini
 # Pytest
 .pytest_cache/
 
+# Rust build artifacts
+rust/target/
+Cargo.lock
+
 # Runtime outputs (large files — keep structure, ignore contents)
 outputs/phase1_screening/
 outputs/generation_queue/
