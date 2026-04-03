@@ -6,7 +6,10 @@ import glob
 import shutil
 import sqlite3
 import subprocess
+import sys
 import logging
+
+csv.field_size_limit(sys.maxsize)
 
 logging.basicConfig(
     level=logging.INFO,
