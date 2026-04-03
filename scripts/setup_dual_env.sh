@@ -8,7 +8,7 @@
 #   2. "pxdesign" — PXDesign env (Protenix 0.5.0+pxd for variant generation)
 #
 # The evolution orchestrator runs inside "cascade" and calls PXDesign from
-# the "pxdesign" env via:  PXDESIGN_CMD="conda run --no-banner -n pxdesign pxdesign"
+# the "pxdesign" env via:  PXDESIGN_CMD="<conda_base>/envs/pxdesign/bin/pxdesign"
 #
 # Usage:
 #   chmod +x scripts/setup_dual_env.sh
@@ -60,10 +60,14 @@ fi
 # Ensure conda shell hooks are available
 eval "$(conda shell.bash hook 2>/dev/null)" || true
 
-CUDA_VERSION="${CUDA_VERSION:-12.1}"
+# Force CUDA 12.1 for PyTorch wheel compatibility: PXDesign pins torch 2.3.1 which
+# only ships cu118/cu121 wheels. RunPod and other hosts often set CUDA_VERSION to
+# their driver version (e.g. 12.4.1) which has no torch 2.3.1 wheels. cu121 wheels
+# are forward-compatible with 12.4+ drivers.
+CUDA_VERSION="12.1"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 
-log_ts "CUDA version target: ${CUDA_VERSION}"
+log_ts "CUDA version target: ${CUDA_VERSION} (forced for PyTorch wheel compatibility)"
 log_ts "Python version: ${PYTHON_VERSION}"
 
 # ---------------------------------------------------------------------------
@@ -133,16 +137,18 @@ if [ "$SETUP_PXDESIGN" = true ]; then
         cd "$PROJECT_ROOT"
     fi
 
-    # Verify pxdesign CLI is available in the env
+    # Verify pxdesign CLI is available in the env (use direct binary path)
+    _PXD_BIN="${CONDA_BASE}/envs/pxdesign/bin/pxdesign"
     log_ts "Verifying pxdesign CLI..."
-    if conda run --no-banner -n pxdesign pxdesign --help &>/dev/null; then
-        log_ts "pxdesign CLI: ${GREEN}OK${NC}"
+    if [ -x "$_PXD_BIN" ] && "$_PXD_BIN" --help &>/dev/null; then
+        log_ts "pxdesign CLI: ${GREEN}OK${NC} ($_PXD_BIN)"
     else
-        log_ts "${YELLOW}pxdesign CLI not responding via conda run. You may need to check the install.${NC}"
+        log_ts "${YELLOW}pxdesign CLI not found at $_PXD_BIN. You may need to check the install.${NC}"
     fi
 
     # Verify Protenix version in pxdesign env
-    PXD_PROTENIX_VER=$(conda run --no-banner -n pxdesign python -c \
+    _PXD_PYTHON="${CONDA_BASE}/envs/pxdesign/bin/python"
+    PXD_PROTENIX_VER=$("$_PXD_PYTHON" -c \
         "import protenix; print(protenix.__version__)" 2>/dev/null || echo "unknown")
     log_ts "Protenix version in pxdesign env: ${GREEN}${PXD_PROTENIX_VER}${NC}"
 
@@ -198,9 +204,16 @@ if [ "$CONDA_DEFAULT_ENV" != "cascade" ]; then
     return 1 2>/dev/null || exit 1
 fi
 
-# Configure PXDESIGN_CMD to call pxdesign from its isolated conda env
+# Configure PXDESIGN_CMD using the direct binary path (faster, works on all conda versions)
 # This is read by scripts/03_pxdesign_wrapper.py (line: os.environ.get("PXDESIGN_CMD"))
-export PXDESIGN_CMD="conda run --no-banner -n pxdesign pxdesign"
+_CONDA_BASE="$(conda info --base 2>/dev/null || echo "")"
+_PXD_BIN="${_CONDA_BASE}/envs/pxdesign/bin/pxdesign"
+if [ -x "$_PXD_BIN" ]; then
+    export PXDESIGN_CMD="$_PXD_BIN"
+else
+    export PXDESIGN_CMD="pxdesign"
+    echo "[WARNING] pxdesign binary not found at $_PXD_BIN; using 'pxdesign' (must be on PATH)"
+fi
 
 # Verify both tools are reachable
 echo "============================================="
@@ -211,7 +224,7 @@ echo " conda env:    $CONDA_DEFAULT_ENV"
 _PROT_VER=$(python -c "import protenix; print(protenix.__version__)" 2>/dev/null || echo "?")
 echo " protenix:     v${_PROT_VER} (evaluation)"
 
-_PXD_VER=$(conda run --no-banner -n pxdesign pxdesign --version 2>/dev/null || echo "?")
+_PXD_VER=$($PXDESIGN_CMD --help 2>/dev/null | head -1 || echo "?")
 echo " pxdesign:     ${_PXD_VER} (generation, via pxdesign env)"
 echo " PXDESIGN_CMD: $PXDESIGN_CMD"
 echo " PROJECT_ROOT: $PROJECT_ROOT"
@@ -246,6 +259,6 @@ echo "    source scripts/cascade_env.sh"
 echo ""
 echo "  Or manually:"
 echo "    conda activate cascade"
-echo "    export PXDESIGN_CMD=\"conda run --no-banner -n pxdesign pxdesign\""
+echo "    export PXDESIGN_CMD=\"\$(conda info --base)/envs/pxdesign/bin/pxdesign\""
 echo ""
 

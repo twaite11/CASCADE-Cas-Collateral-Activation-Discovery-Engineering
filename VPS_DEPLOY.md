@@ -98,7 +98,7 @@ source scripts/cascade_env.sh
 
 This does three things:
 1. Activates the `cascade` conda env (Protenix 1.0.4)
-2. Exports `PXDESIGN_CMD="conda run --no-banner -n pxdesign pxdesign"`
+2. Exports `PXDESIGN_CMD` pointing to the pxdesign binary (direct path, no `conda run` overhead)
 3. Prints a verification summary
 
 <details>
@@ -106,7 +106,7 @@ This does three things:
 
 ```bash
 conda activate cascade
-export PXDESIGN_CMD="conda run --no-banner -n pxdesign pxdesign"
+export PXDESIGN_CMD="$(conda info --base)/envs/pxdesign/bin/pxdesign"
 ```
 
 </details>
@@ -172,13 +172,7 @@ The wrapper `scripts/03_pxdesign_wrapper.py` reads this environment variable:
 pxdesign_bin = os.environ.get("PXDESIGN_CMD", "pxdesign")
 ```
 
-When set to `"conda run --no-banner -n pxdesign pxdesign"`, every PXDesign call executes inside the `pxdesign` conda env (Protenix 0.5.0+pxd), while all other pipeline code stays in `cascade` (Protenix 1.0.4).
-
-**Performance tip:** `conda run` adds ~2s overhead per call. For faster invocation, use the full binary path:
-
-```bash
-export PXDESIGN_CMD="/path/to/miniconda3/envs/pxdesign/bin/pxdesign"
-```
+The setup script auto-detects the binary path (e.g. `/workspace/miniconda3/envs/pxdesign/bin/pxdesign`). Every PXDesign call executes using the `pxdesign` conda env's libraries (Protenix 0.5.0+pxd), while all other pipeline code stays in `cascade` (Protenix 1.0.4). Using the direct binary path is faster than `conda run` (no ~2s overhead per call) and works on all conda versions.
 
 ---
 
@@ -215,7 +209,7 @@ Run the setup script or set `PXDESIGN_CMD` manually:
 ```bash
 ./scripts/setup_dual_env.sh --pxdesign
 # or:
-export PXDESIGN_CMD="conda run --no-banner -n pxdesign pxdesign"
+export PXDESIGN_CMD="$(conda info --base)/envs/pxdesign/bin/pxdesign"
 ```
 
 </details>

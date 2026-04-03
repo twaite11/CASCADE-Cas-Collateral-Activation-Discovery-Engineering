@@ -41,9 +41,12 @@ fi
 # If PXDESIGN_CMD is not set, check if a 'pxdesign' conda env exists and
 # configure cross-env invocation automatically.
 if [ -z "$PXDESIGN_CMD" ]; then
-    if conda env list 2>/dev/null | grep -q "^pxdesign "; then
-        export PXDESIGN_CMD="conda run --no-banner -n pxdesign pxdesign"
-        log_ts "Auto-detected pxdesign conda env -> PXDESIGN_CMD=$PXDESIGN_CMD"
+    # Prefer direct binary path (faster, no conda run overhead, works on all conda versions)
+    _CONDA_BASE="$(conda info --base 2>/dev/null || echo "")"
+    _PXD_BIN="${_CONDA_BASE}/envs/pxdesign/bin/pxdesign"
+    if [ -n "$_CONDA_BASE" ] && [ -x "$_PXD_BIN" ]; then
+        export PXDESIGN_CMD="$_PXD_BIN"
+        log_ts "Auto-detected pxdesign binary -> PXDESIGN_CMD=$PXDESIGN_CMD"
     elif command -v pxdesign &>/dev/null; then
         log_ts "pxdesign found on PATH (same env)."
     else

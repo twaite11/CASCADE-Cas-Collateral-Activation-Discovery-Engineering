@@ -386,7 +386,7 @@ Environment variables:
 
 | Variable | Example | Description |
 |:---------|:--------|:------------|
-| `PXDESIGN_CMD` | `conda run --no-banner -n pxdesign pxdesign` | How to invoke PXDesign from the cascade env |
+| `PXDESIGN_CMD` | `/path/to/envs/pxdesign/bin/pxdesign` | Direct path to PXDesign binary in its conda env |
 | `PROTENIX_BASE_MODEL` | `protenix_base_default_v1.0.0` | Override Protenix base model name |
 | `CUDA_VERSION` | `12.1` | CUDA version for dual-env setup |
 
