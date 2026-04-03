@@ -125,8 +125,16 @@ def calculate_hepn_shift(structure_path, hepn1_his_idx, hepn2_his_idx, protein_c
         model = structure[0]
         chain = model[protein_chain_id]
         
-        res1 = chain[hepn1_his_idx]
-        res2 = chain[hepn2_his_idx]
+        # Protenix outputs use sequential 1-based numbering matching FASTA positions,
+        # so try sequential indexing first, then fall back to PDB resseq lookup.
+        std_residues = [r for r in chain.get_residues() if r.id[0] == ' ']
+        idx1 = hepn1_his_idx - 1
+        idx2 = hepn2_his_idx - 1
+        if 0 <= idx1 < len(std_residues) and 0 <= idx2 < len(std_residues):
+            res1, res2 = std_residues[idx1], std_residues[idx2]
+        else:
+            res1 = chain[hepn1_his_idx]
+            res2 = chain[hepn2_his_idx]
         
         coord1 = res1['CA'].get_coord()
         coord2 = res2['CA'].get_coord()

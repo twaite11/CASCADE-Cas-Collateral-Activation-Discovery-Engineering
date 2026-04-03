@@ -9,6 +9,18 @@ import logging
 import importlib.util
 import numpy as np
 
+
+def _flush_gpu_memory():
+    """Best-effort GPU VRAM reclaim between heavy inference steps."""
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except ImportError:
+        pass
+
 # --- Logging ---
 logging.basicConfig(
     level=logging.INFO,
@@ -471,7 +483,7 @@ def main_evolution_loop():
 
             if SLEEP_AFTER_PXDESIGN > 0:
                 time.sleep(SLEEP_AFTER_PXDESIGN)
-            gc.collect()
+            _flush_gpu_memory()
 
             if not new_variants_fastas:
                 log.warning("No variants generated this generation. Continuing...")
@@ -484,7 +496,7 @@ def main_evolution_loop():
                 variant_name = os.path.basename(variant_fasta).replace(".fasta", "")
 
                 h1_idx, h2_idx = get_catalytic_histidine_indices(variant_fasta)
-                if not h1_idx:
+                if h1_idx is None or h2_idx is None:
                     continue
 
                 log.info(f"Evaluating variant {variant_name} (Protenix mini OFF/ON - may take 2-5 min each)...")
@@ -533,7 +545,7 @@ def main_evolution_loop():
                     )
                     if SLEEP_AFTER_PROTENIX_BASE > 0:
                         time.sleep(SLEEP_AFTER_PROTENIX_BASE)
-                    gc.collect()
+                    _flush_gpu_memory()
                     true_on_dist = calculate_hepn_shift(hf_pdb, h1_idx, h2_idx)
                     scores = extract_protenix_scores(hf_summary)
                     iptm, af2_ig = scores["iptm"], scores["af2_ig"]
@@ -579,7 +591,7 @@ def main_evolution_loop():
                     struct_path, offtarget_by_mismatch or None, is_elite,
                 )
                 results.append((variant_name, variant_fasta, fitness, off_dist, true_on_dist, iptm, af2_ig, hf_pdb_path, offtarget_by_mismatch))
-                gc.collect()
+                _flush_gpu_memory()
 
             if not results:
                 log.warning("No valid results this generation. Continuing to next generation...")

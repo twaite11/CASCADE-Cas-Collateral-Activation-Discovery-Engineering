@@ -147,16 +147,39 @@ def generate_evaluation_jsons(variant_fasta, baseline_id, metadata_path, out_dir
         
     return off_json_path, on_json_path
 
+def _find_cached_outputs(pred_dir):
+    """Return (structure_path, summary_path) if both exist under pred_dir, else (None, None)."""
+    if not os.path.isdir(pred_dir):
+        return None, None
+    structure_files = glob.glob(os.path.join(pred_dir, "**/*.cif"), recursive=True)
+    if not structure_files:
+        structure_files = glob.glob(os.path.join(pred_dir, "**/*.pdb"), recursive=True)
+    summary_files = glob.glob(os.path.join(pred_dir, "**/*_summary*.json"), recursive=True)
+    if not summary_files:
+        summary_files = glob.glob(os.path.join(pred_dir, "*_summary*.json"))
+    if structure_files and summary_files:
+        return structure_files[0], summary_files[0]
+    return None, None
+
+
 def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path=None):
     """
     Executes the Protenix CLI. Logs when starting long-running inference.
     model_tier="mini" for Script 4 (Fast Filter)
     model_tier="base" for Script 5 (High Fidelity Oracle)
     seqres_db_path: if set and path exists, runs protenix msa first for better MSA quality.
+    Caches results: skips inference when structure + summary already exist.
     """
     os.makedirs(out_dir, exist_ok=True)
     base_name = os.path.basename(json_path).replace(".json", "")
     tier_label = "mini" if model_tier == "mini" else "base"
+
+    pred_dir = os.path.join(out_dir, base_name)
+    cached_struct, cached_summary = _find_cached_outputs(pred_dir)
+    if cached_struct and cached_summary:
+        log.info(f"Reusing cached Protenix {tier_label} output for {base_name}")
+        return cached_struct, cached_summary
+
     log.info(f"Starting Protenix {tier_label} inference for {base_name} (this may take several minutes)...")
     predict_input = json_path
     use_msa = False
@@ -164,16 +187,22 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
     # Optional: run protenix msa first (improves prediction quality)
     msa_dir = os.path.join(out_dir, f"{base_name}_msa")
     os.makedirs(msa_dir, exist_ok=True)
-    try:
-        msa_cmd = ["protenix", "msa", "--input", json_path, "--out_dir", msa_dir]
-        subprocess.run(msa_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        # Protenix msa may update JSON in-place or output to out_dir; check for updated JSON
-        msa_output = os.path.join(msa_dir, os.path.basename(json_path))
-        if os.path.exists(msa_output):
-            predict_input = msa_output
-            use_msa = True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass  # Fall back to raw JSON without MSA
+    msa_output = os.path.join(msa_dir, os.path.basename(json_path))
+    if os.path.exists(msa_output):
+        predict_input = msa_output
+        use_msa = True
+        log.info(f"  Reusing cached MSA output for {base_name}")
+    else:
+        try:
+            msa_cmd = ["protenix", "msa", "--input", json_path, "--out_dir", msa_dir]
+            if seqres_db_path and os.path.isdir(seqres_db_path):
+                msa_cmd.extend(["--db_dir", seqres_db_path])
+            subprocess.run(msa_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if os.path.exists(msa_output):
+                predict_input = msa_output
+                use_msa = True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass  # Fall back to raw JSON without MSA
 
     if model_tier == "mini":
         model_name = "protenix_mini_default_v0.5.0"
