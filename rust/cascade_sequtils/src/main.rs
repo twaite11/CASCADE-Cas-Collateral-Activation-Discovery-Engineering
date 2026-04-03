@@ -92,36 +92,6 @@ fn read_fasta_no_upper(content: &str) -> String {
         .join("")
 }
 
-fn read_fasta_all(content: &str) -> String {
-    content
-        .lines()
-        .filter(|l| !l.starts_with('>'))
-        .map(|l| l.trim())
-        .collect::<Vec<_>>()
-        .join("")
-        .to_uppercase()
-}
-
-fn read_fasta_first(content: &str) -> String {
-    let mut seq_parts: Vec<&str> = Vec::new();
-    let mut in_first = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('>') {
-            if in_first {
-                break;
-            }
-            in_first = true;
-            continue;
-        }
-        if in_first || !trimmed.is_empty() {
-            in_first = true;
-            seq_parts.push(trimmed);
-        }
-    }
-    seq_parts.join("").to_uppercase()
-}
-
 fn extract_mutations(baseline_path: &PathBuf, variant_path: &PathBuf) -> Result<(), String> {
     let baseline = read_baseline_sequence(baseline_path)?;
     let variant_content = fs::read_to_string(variant_path)
@@ -165,10 +135,30 @@ fn extract_mutations(baseline_path: &PathBuf, variant_path: &PathBuf) -> Result<
 // find-histidines
 // ---------------------------------------------------------------------------
 
+fn read_fasta_first_no_upper(content: &str) -> String {
+    let mut seq_parts: Vec<&str> = Vec::new();
+    let mut in_first = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('>') {
+            if in_first {
+                break;
+            }
+            in_first = true;
+            continue;
+        }
+        if in_first || !trimmed.is_empty() {
+            in_first = true;
+            seq_parts.push(trimmed);
+        }
+    }
+    seq_parts.join("")
+}
+
 fn find_histidines(fasta_path: &PathBuf) -> Result<(), String> {
     let content = fs::read_to_string(fasta_path)
         .map_err(|e| format!("Cannot read FASTA {}: {e}", fasta_path.display()))?;
-    let seq = read_fasta_first(&content);
+    let seq = read_fasta_first_no_upper(&content);
 
     let re = Regex::new(r"R.{3,6}H").unwrap();
     let matches: Vec<_> = re.find_iter(&seq).collect();
