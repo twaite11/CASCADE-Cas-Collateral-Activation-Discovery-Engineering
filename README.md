@@ -6,9 +6,10 @@
 
 **Weaponizing Cas13 Collateral Cleavage: An AI-Driven Structural Pipeline for Engineered Suicide Switches in Targeted Oncology**
 
+[![Rust](https://img.shields.io/badge/Rust-Powered-000000?logo=rust&logoColor=white)](https://github.com/twaite11/cattle-prod)
+[![Cattle-Prod](https://img.shields.io/badge/Eval_Engine-Cattle--Prod-ff6b35)](https://github.com/twaite11/cattle-prod)
+[![PXDesign](https://img.shields.io/badge/Generation-PXDesign-green)](https://github.com/bytedance/PXDesign)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue?logo=python&logoColor=white)](https://www.python.org)
-[![Protenix 1.0.4](https://img.shields.io/badge/Protenix-1.0.4-teal?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6bTAgMThjLTQuNDIgMC04LTMuNTgtOC04czMuNTgtOCA4LTggOCAzLjU4IDggOC0zLjU4IDgtOCA4eiIgZmlsbD0id2hpdGUiLz48L3N2Zz4=)](https://github.com/bytedance/protenix)
-[![PXDesign](https://img.shields.io/badge/PXDesign-0.5.0+pxd-green?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==)](https://github.com/bytedance/PXDesign)
 [![Tests](https://img.shields.io/badge/tests-56%20passed-brightgreen?logo=pytest&logoColor=white)](#testing)
 [![License](https://img.shields.io/badge/license-Research-lightgrey)](#license)
 
@@ -68,23 +69,25 @@ The thermodynamic OFF→ON transition is controlled by **Inter-Domain Linkers (I
 
 CASCADE operates in two phases. Phase 1 bootstraps validated baselines from raw metagenomic data. Phase 2 runs an autonomous **reinforcement-learning (RL) driven evolution loop** that continuously designs, evaluates, and learns from structural predictions.
 
+Structural evaluation is powered by **[Cattle-Prod](https://github.com/twaite11/cattle-prod)** — a Rust-native reimplementation of Protenix that compiles to a single binary with zero Python runtime overhead. The compound speedup on CPU-bound stages (parsing, tokenization, featurization, scoring) means more generations explored per GPU-hour.
+
 ```
   ┌─────────────────────────────────────────────────────────────┐
   │  PHASE 1: Bootstrap                                         │
-  │  Raw FASTAs → Parse & HEPN-anchor → Protenix-mini screen   │
+  │  Raw FASTAs → Parse & HEPN-anchor → Cattle-Prod screen     │
   │  → Validated baselines with native crRNAs                   │
   └────────────────────────┬────────────────────────────────────┘
                            ▼
   ┌─────────────────────────────────────────────────────────────┐
   │  PHASE 2: Active Learning Evolution Loop                    │
   │                                                             │
-  │  ┌──────────┐    ┌──────────┐    ┌──────────┐              │
-  │  │ PXDesign │───▶│ Protenix │───▶│ Fitness  │              │
-  │  │ Generate │    │ Evaluate │    │  Score   │              │
-  │  └────▲─────┘    └──────────┘    └────┬─────┘              │
-  │       │                               │                     │
-  │       │    ┌──────────────────┐       │                     │
-  │       └────│  RL Bias Matrix  │◀──────┘                     │
+  │  ┌──────────┐    ┌─────────────┐    ┌──────────┐           │
+  │  │ PXDesign │───▶│ Cattle-Prod │───▶│ Fitness  │           │
+  │  │ Generate │    │  ⚡ (Rust)  │    │  Score   │           │
+  │  └────▲─────┘    └─────────────┘    └────┬─────┘           │
+  │       │                                  │                  │
+  │       │    ┌──────────────────┐          │                  │
+  │       └────│  RL Bias Matrix  │◀─────────┘                  │
   │            │  (EvolutionGym)  │                              │
   │            └──────────────────┘                              │
   │                                                             │
@@ -99,8 +102,8 @@ CASCADE operates in two phases. Phase 1 bootstraps validated baselines from raw 
 
 | Step | Script | What It Does |
 |:-----|:-------|:-------------|
-| **1a** | `01_parse_and_annotate.py` | Parse FASTA + CSV into SQLite DB. Anchor HEPN1/HEPN2 domains via `R.{4,6}H` motif. Generate Protenix-compatible JSONs. |
-| **1b** | `02_run_screening.sh` | GPU-accelerated Protenix-mini structural screen. Filters hits that can't form bilobed structures or bind crRNA. |
+| **1a** | `01_parse_and_annotate.py` | Parse FASTA + CSV into SQLite DB. Anchor HEPN1/HEPN2 domains via `R.{4,6}H` motif. Generate prediction-compatible JSONs. |
+| **1b** | `02_run_screening.sh` | GPU-accelerated Cattle-Prod mini structural screen. Filters hits that can't form bilobed structures or bind crRNA. |
 | **1c** | `02b_rerun_top_with_msa.sh` | *(Optional)* Re-run top N baselines with MSA for higher-quality seed structures. |
 | **1d** | `validate_crispr_repeats.py` | *(Optional)* Validate CRISPR repeats via RNAfold. Outputs `validated_baseline_ids.txt` to restrict evolution. |
 
@@ -114,7 +117,7 @@ For each generation:
   2. STITCH    → Wild-type HEPN1/HEPN2 grafted into designed linkers
   3. RESOLVE   → Unknown residues (X) replaced from baseline or Glycine
   4. BIAS      → RL bias matrix applied to linker regions (closed-loop RL)
-  5. EVALUATE  → Protenix predicts OFF-state and ON-state structures
+  5. EVALUATE  → Cattle-Prod predicts OFF-state and ON-state structures
   6. MEASURE   → 3D HEPN distance (Å) + ipTM + AF2-IG confidence scores
   7. TEST      → Off-target specificity (1/2/3-mismatch progressive penalty)
   8. SCORE     → Composite fitness: HEPN_shift + ipTM×50 + AF2-IG×20 − penalties
@@ -180,6 +183,7 @@ The pipeline tracks the **all-time highest-fitness protein** across all generati
 |:------------|:--------|
 | **GPU** | A100 40GB (80GB recommended) |
 | **OS** | Ubuntu 22.04+ with CUDA 12.x |
+| **Rust** | 1.78+ (for Cattle-Prod) |
 | **Python** | 3.11+ |
 | **Conda** | Miniconda / Anaconda |
 | **Storage** | 100–200 GB free |
@@ -190,19 +194,25 @@ The pipeline tracks the **all-time highest-fitness protein** across all generati
 git clone https://github.com/twaite11/CASCADE-Cas-Collateral-Activation-Discovery-Engineering.git
 cd CASCADE-Cas-Collateral-Activation-Discovery-Engineering
 
-# Automated dual-environment setup (Protenix 1.0.4 + PXDesign/Protenix 0.5.0)
+# 1. Build Cattle-Prod (Rust eval engine)
+git clone https://github.com/twaite11/cattle-prod.git ../cattle-prod
+cd ../cattle-prod/cattle-prod && cargo build --release -p cattle-prod-cli && cd -
+export PATH="$(realpath ../cattle-prod/cattle-prod/target/release):$PATH"
+
+# 2. Automated dual-environment setup (detects Cattle-Prod + installs PXDesign)
 chmod +x scripts/setup_dual_env.sh
 ./scripts/setup_dual_env.sh
 ```
 
-This creates two isolated conda environments:
+The setup script auto-detects Cattle-Prod and configures two conda environments:
 
-| Environment | Protenix | Purpose |
-|:------------|:---------|:--------|
-| `cascade` | 1.0.4 | Structure evaluation, fitness scoring, evolution loop |
-| `pxdesign` | 0.5.0+pxd | PXDesign variant generation (called cross-env) |
+| Component | Language | Purpose |
+|:----------|:---------|:--------|
+| **Cattle-Prod** | Rust | Structure prediction engine (single binary, ~5ms startup) |
+| `cascade` env | Python | Orchestration, fitness scoring, evolution loop |
+| `pxdesign` env | Python | PXDesign variant generation (called cross-env) |
 
-> **Why two envs?** PXDesign depends on Protenix 0.5.0+pxd, which conflicts with Protenix 1.0.4. The pipeline runs in `cascade` and calls PXDesign from `pxdesign` via `PXDESIGN_CMD`.
+> **Why Cattle-Prod over Protenix?** Cattle-Prod is a Rust reimplementation of Protenix that eliminates Python interpreter overhead, parallelizes CPU-bound featurization via Rayon, and deploys as a single 15MB binary. CASCADE auto-detects it on PATH and falls back to Protenix if unavailable.
 
 ### Activate (Every Session)
 
@@ -265,7 +275,7 @@ CASCADE/
 │   ├── 🔧 run_pipeline.sh             # Full pipeline runner with logging
 │   │
 │   ├── 📜 01_parse_and_annotate.py     # Phase 1a: Ingest → SQLite DB + HEPN anchoring
-│   ├── 📜 02_run_screening.sh          # Phase 1b: Protenix-mini structural screen
+│   ├── 📜 02_run_screening.sh          # Phase 1b: Cattle-Prod mini structural screen
 │   ├── 📜 02b_rerun_top_with_msa.sh   # Phase 1c: Optional MSA re-run for top N
 │   ├── 📜 validate_crispr_repeats.py   # Phase 1d: Optional CRISPR repeat validation
 │   │
@@ -273,7 +283,7 @@ CASCADE/
 │   ├── 📜 evolution_orchestrator.py    # Phase 2: Active learning master controller
 │   │
 │   └── 📁 utils/
-│       ├── 📜 protenix_eval.py         # ON/OFF payload generation + Protenix inference
+│       ├── 📜 protenix_eval.py         # ON/OFF payload generation + Cattle-Prod/Protenix inference
 │       ├── 📜 pdb_kinematics.py        # 3D HEPN distance + confidence score extraction
 │       └── 📜 hepn_structural_stitch.py # Graft WT HEPN domains into designed linkers
 │
@@ -291,7 +301,7 @@ CASCADE/
 │   ├── cas13_variants.db               #   SQLite database
 │   └── variant_domain_metadata.json    #   HEPN domain boundaries
 │
-├── 📁 jsons/                           # Protenix-compatible input payloads
+├── 📁 jsons/                           # Prediction input payloads (Cattle-Prod/Protenix format)
 │
 └── 📁 outputs/
     ├── phase1_screening/               # Baseline CIF/PDB structures
@@ -309,12 +319,32 @@ CASCADE/
 
 ---
 
-## ⚡ Rust Accelerators (Optional)
+## ⚡ Rust-Powered Stack
 
-Three compiled Rust CLI tools accelerate the CPU-bound portions of the pipeline. When present on `PATH` (or in `rust/target/release/`), each Python script automatically delegates to the Rust binary and falls back to the Python implementation if unavailable. **Zero breaking changes.**
+CASCADE is built on a Rust-first philosophy. The most critical component — structure prediction — runs as a compiled Rust binary, and three additional Rust tools accelerate the CPU-bound orchestration. Python handles glue logic and PXDesign integration.
+
+### Cattle-Prod (Eval Engine)
+
+**[Cattle-Prod](https://github.com/twaite11/cattle-prod)** is the structure prediction engine. It's a full Rust reimplementation of Protenix (AlphaFold3-class) with:
+
+| | Python (Protenix) | Rust (Cattle-Prod) |
+|---|---|---|
+| **Startup** | ~4s | ~5ms |
+| **CPU featurization** | GIL-bound | Rayon parallel |
+| **Deployment** | conda + 2GB deps | Single 15MB binary |
+| **Memory safety** | Runtime errors | Compile-time guarantees |
+
+CASCADE auto-detects `cattle-prod` on PATH. Override with `EVAL_CMD`:
 
 ```bash
-# Build (requires Rust toolchain)
+export EVAL_CMD=/path/to/cattle-prod   # or: export EVAL_CMD=protenix (fallback)
+```
+
+### Pipeline Accelerators (Optional)
+
+Three additional Rust CLI tools accelerate CPU-bound orchestration steps. When present on `PATH` (or in `rust/target/release/`), Python scripts automatically delegate to them. **Zero breaking changes.**
+
+```bash
 cd rust && cargo build --release
 ```
 
@@ -324,7 +354,7 @@ cd rust && cargo build --release
 | `cascade_sequtils` | Evolution loop: mutation extraction, histidine motif finding, CRISPR repeat k-mer validation | 5-20x |
 | `cascade_structscore` | Evolution loop: CIF/PDB structure parsing, CA-CA distance calculation, score extraction | 5-15x |
 
-> `setup_vps.sh` automatically builds these if `cargo` is installed. GPU-bound steps (Protenix, PXDesign) are unaffected.
+> `setup_dual_env.sh` automatically builds Cattle-Prod and these accelerators if `cargo` is installed.
 
 ---
 
@@ -386,8 +416,9 @@ Environment variables:
 
 | Variable | Example | Description |
 |:---------|:--------|:------------|
+| `EVAL_CMD` | `cattle-prod` or `/path/to/cattle-prod` | Structure prediction engine (auto-detected if on PATH) |
 | `PXDESIGN_CMD` | `/path/to/envs/pxdesign/bin/pxdesign` | Direct path to PXDesign binary in its conda env |
-| `PROTENIX_BASE_MODEL` | `protenix_base_default_v1.0.0` | Override Protenix base model name |
+| `CATTLE_PROD_BASE_MODEL` | `cattle_prod_base_default_v1.0.0` | Override Cattle-Prod base model name |
 | `CUDA_VERSION` | `12.1` | CUDA version for dual-env setup |
 
 ---
@@ -434,7 +465,7 @@ This is a research project. Contact the authors for licensing inquiries.
 
 <div align="center">
 
-*Built for the frontier of programmable biology.*
+*Built for the frontier of programmable biology. Powered by Rust.*
 
 **CASCADE** — turning nature's "flaw" into medicine's most precise weapon.
 
