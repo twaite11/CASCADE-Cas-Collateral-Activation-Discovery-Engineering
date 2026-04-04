@@ -281,17 +281,15 @@ def run_pxdesign_generation(
     try:
         result = subprocess.run(
             cmd,
-            check=True,
             capture_output=True,
             text=True,
             timeout=3600,
             cwd=os.path.dirname(os.path.abspath(__file__)) or ".",
         )
-    except subprocess.CalledProcessError as e:
-        log.error(f"PXDesign failed:\n{e.stderr}")
-        raise
+        if result.returncode != 0:
+            log.warning(f"PXDesign exited with code {result.returncode} (may still have generated sequences)")
     except subprocess.TimeoutExpired:
-        log.error("PXDesign timed out after 2 hours")
+        log.error("PXDesign timed out after 1 hour")
         raise
 
     def _write_variant_or_fallback(i: int, binder_seq: str) -> str:
@@ -316,10 +314,12 @@ def run_pxdesign_generation(
         log.warning(f"Stitching failed for design {i}; writing baseline as fallback (will receive penalty)")
         return fallback_path
 
+    # Pipeline mode writes sample_level_output.csv with MPNN-designed sequences
+    sample_csvs = glob.glob(os.path.join(abs_out, "**", "sample_level_output.csv"), recursive=True)
     design_out = os.path.join(abs_out, "design_outputs")
-    summary_csvs = glob.glob(os.path.join(design_out, "**", "summary.csv"), recursive=True)
+    summary_csvs = sample_csvs or glob.glob(os.path.join(design_out, "**", "summary.csv"), recursive=True)
     if not summary_csvs:
-        log.warning("No summary.csv found; checking orig_designed and predictions")
+        log.warning("No sequence CSV found; checking CIF predictions")
         pred_glob = glob.glob(os.path.join(abs_out, "**", "predictions", "*.cif"), recursive=True)
         if not pred_glob:
             return []
