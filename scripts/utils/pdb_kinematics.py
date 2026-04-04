@@ -67,10 +67,11 @@ def _load_structure(path):
 
 def extract_protenix_scores(summary_json_path):
     """
-    Parses the Protenix _summary.json output to extract the true ipTM, pTM, and AF2-IG scores.
+    Parses the confidence/summary JSON output to extract ipTM, pTM, and AF2-IG scores.
+    Compatible with both Protenix (*_summary*.json) and cattle-prod (*_summary_confidence.json).
     """
     if not os.path.exists(summary_json_path):
-        raise FileNotFoundError(f"Protenix summary file not found: {summary_json_path}")
+        raise FileNotFoundError(f"Summary/confidence file not found: {summary_json_path}")
 
     rust_out = _run_rust_structscore(["extract-scores", "--summary", str(summary_json_path)])
     if rust_out is not None:
@@ -82,12 +83,9 @@ def extract_protenix_scores(summary_json_path):
     with open(summary_json_path, 'r') as f:
         data = json.load(f)
         
-    # Standard AlphaFold3/Protenix summary dictionary keys
     iptm = float(data.get('iptm', 0.0))
     ptm = float(data.get('ptm', 0.0))
     ranking_score = float(data.get('ranking_score', 0.0))
-    
-    # Extract AF2-IG (Interface Gap/Confidence) score which is critical for scoring RNP complexes
     af2_ig = float(data.get('af2_ig', data.get('af2_ig_score', 0.0)))
     
     return {

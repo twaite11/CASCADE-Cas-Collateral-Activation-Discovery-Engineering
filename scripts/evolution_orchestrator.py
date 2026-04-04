@@ -45,6 +45,7 @@ from utils.protenix_eval import (
     generate_offtarget_json,
     TARGET_REGION,
     DUMMY_SPACER_RNA,
+    EVAL_ENGINE,
 )
 from utils.pdb_kinematics import calculate_hepn_shift, extract_protenix_scores, find_structure_files
 
@@ -499,7 +500,7 @@ def main_evolution_loop():
                 if h1_idx is None or h2_idx is None:
                     continue
 
-                log.info(f"Evaluating variant {variant_name} (Protenix mini OFF/ON - may take 2-5 min each)...")
+                log.info(f"Evaluating variant {variant_name} ({EVAL_ENGINE} mini OFF/ON - may take 2-5 min each)...")
                 off_json, on_json = generate_evaluation_jsons(
                     variant_fasta, baseline_id, METADATA_FILE, FAST_EVAL_DIR, crrna_lookup_id=crrna_lookup_id
                 )
@@ -516,7 +517,7 @@ def main_evolution_loop():
                     if SLEEP_AFTER_PROTENIX_MINI > 0:
                         time.sleep(SLEEP_AFTER_PROTENIX_MINI)
                 except Exception as e:
-                    log.warning(f"Protenix failed for {variant_name}: {e}")
+                    log.warning(f"{EVAL_ENGINE} failed for {variant_name}: {e}")
                     fitness = compute_fitness(0, 999, 0.4, 0, False, None)
                     gym.register_evaluation(variant_name, mutations_made, 0, 999, 0.4, af2_ig_score=0.0, is_full_ternary=False, offtarget_by_mismatch=None)
                     save_rl_training_record(
@@ -538,7 +539,7 @@ def main_evolution_loop():
                 true_on_dist = on_dist
 
                 if has_potential:
-                    log.info("Filter passed. Running Protenix base ternary (may take 10-30 min)...")
+                    log.info(f"Filter passed. Running {EVAL_ENGINE} base ternary (may take 10-30 min)...")
 
                     hf_pdb, hf_summary = run_protenix_inference(
                         on_json, HIGH_FIDELITY_DIR, model_tier="base", seqres_db_path=SEQRES_DB_PATH
