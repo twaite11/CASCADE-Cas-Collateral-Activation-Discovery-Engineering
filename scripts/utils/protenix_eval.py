@@ -187,20 +187,28 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
     # Optional: run protenix msa first (improves prediction quality)
     msa_dir = os.path.join(out_dir, f"{base_name}_msa")
     os.makedirs(msa_dir, exist_ok=True)
-    msa_output = os.path.join(msa_dir, os.path.basename(json_path))
-    if os.path.exists(msa_output):
-        predict_input = msa_output
-        use_msa = True
-        log.info(f"  Reusing cached MSA output for {base_name}")
+    # Protenix msa writes updated JSON to <input_dir>/<name>-update-msa.json
+    json_dir = os.path.dirname(os.path.abspath(json_path))
+    msa_output_primary = os.path.join(json_dir, f"{base_name}-update-msa.json")
+    msa_output_fallback = os.path.join(msa_dir, os.path.basename(json_path))
+
+    for msa_candidate in [msa_output_primary, msa_output_fallback]:
+        if os.path.exists(msa_candidate):
+            predict_input = msa_candidate
+            use_msa = True
+            log.info(f"  Reusing cached MSA output for {base_name}")
+            break
     else:
         try:
             msa_cmd = ["protenix", "msa", "--input", json_path, "--out_dir", msa_dir]
             if seqres_db_path and os.path.isdir(seqres_db_path):
                 msa_cmd.extend(["--db_dir", seqres_db_path])
             subprocess.run(msa_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if os.path.exists(msa_output):
-                predict_input = msa_output
-                use_msa = True
+            for msa_candidate in [msa_output_primary, msa_output_fallback]:
+                if os.path.exists(msa_candidate):
+                    predict_input = msa_candidate
+                    use_msa = True
+                    break
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass  # Fall back to raw JSON without MSA
 

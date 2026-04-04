@@ -43,7 +43,10 @@ run_single() {
         mkdir -p "$MSA_DIR"
         echo "[1/2] Running MSA search (protenix msa)..."
         if CUDA_VISIBLE_DEVICES="$gpu_id" protenix msa --input "$json_file" --out_dir "$MSA_DIR" > "$OUTPUT_DIR/${base_name}_msa.log" 2>&1; then
-            MSA_JSON="$MSA_DIR/$(basename "$json_file")"
+            MSA_JSON="$JSON_DIR/${base_name}-update-msa.json"
+            if [ ! -f "$MSA_JSON" ]; then
+                MSA_JSON="$MSA_DIR/$(basename "$json_file")"
+            fi
             if [ -f "$MSA_JSON" ]; then
                 PREDICT_INPUT="$MSA_JSON"
                 USE_MSA="true"

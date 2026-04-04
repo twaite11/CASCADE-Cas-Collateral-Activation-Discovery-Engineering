@@ -100,11 +100,17 @@ for (( i=0; i<count; i++ )); do
         continue
     fi
 
-    MSA_JSON="$MSA_DIR/$(basename "$json_file")"
+    # Protenix msa writes the updated JSON to <original_dir>/<name>-update-msa.json
+    MSA_JSON="$JSON_DIR/${bid}-update-msa.json"
+    if [ ! -f "$MSA_JSON" ]; then
+        # Fallback: check if it wrote to the MSA output dir instead
+        MSA_JSON="$MSA_DIR/$(basename "$json_file")"
+    fi
     if [ ! -f "$MSA_JSON" ]; then
         log_ts "MSA output not found for $bid. Keeping original PDB."
         continue
     fi
+    log_ts "Found MSA-updated JSON: $MSA_JSON"
 
     log_ts "[2/2] Running Protenix-Mini with MSA for $bid (replacing Phase 1 PDB)..."
     protenix pred \
