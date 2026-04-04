@@ -229,7 +229,13 @@ def _model_name_for_tier(model_tier, engine):
 
 
 def _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin):
-    """Run MSA search step. Returns (predict_input_path, use_msa_bool)."""
+    """Run MSA search step. Returns predict_input_path.
+
+    Always enables MSA for maximum prediction robustness.  The MSA
+    enrichment step is attempted (it may add alignment data to the
+    JSON); if it fails the original input is used but use_msa remains
+    True so the model still activates its MSA pathway.
+    """
     msa_dir = os.path.join(out_dir, f"{base_name}_msa")
     os.makedirs(msa_dir, exist_ok=True)
     json_dir = os.path.dirname(os.path.abspath(json_path))
@@ -239,7 +245,7 @@ def _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin):
     for msa_candidate in [msa_output_primary, msa_output_fallback]:
         if os.path.exists(msa_candidate):
             log.info(f"  Reusing cached MSA output for {base_name}")
-            return msa_candidate, True
+            return msa_candidate
 
     try:
         msa_cmd = [engine_bin, "msa", "--input", json_path, "--out_dir", msa_dir]
@@ -248,10 +254,10 @@ def _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin):
         subprocess.run(msa_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         for msa_candidate in [msa_output_primary, msa_output_fallback]:
             if os.path.exists(msa_candidate):
-                return msa_candidate, True
+                return msa_candidate
     except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-    return json_path, False
+        log.debug(f"  MSA enrichment unavailable for {base_name}; proceeding with use_msa=true on raw input")
+    return json_path
 
 
 def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path=None):
@@ -276,7 +282,7 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
 
     log.info(f"Starting {engine} {tier_label} inference for {base_name} (this may take several minutes)...")
 
-    predict_input, use_msa = _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin)
+    predict_input = _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin)
 
     model_name = _model_name_for_tier(model_tier, engine)
     base_fallback = None
@@ -291,7 +297,7 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
         "-i", predict_input,
         "-o", out_dir,
         "-n", model_name,
-        "--use_msa", str(use_msa).lower(),
+        "--use_msa", "true",
         "--use_default_params", "true",
     ]
 
@@ -303,7 +309,7 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
                 "--input", predict_input,
                 "--out_dir", out_dir,
                 "--model_name", model_name,
-                "--use_msa", str(use_msa).lower(),
+                "--use_msa", "true",
                 "--use_default_params", "true",
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)

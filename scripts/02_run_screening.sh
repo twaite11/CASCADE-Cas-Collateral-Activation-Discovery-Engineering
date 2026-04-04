@@ -57,9 +57,9 @@ run_single() {
     echo "[GPU $gpu_id] Processing Hit: $base_name"
     echo "=================================================="
 
-    # Step 1: Optional MSA (skipped by default - remote server is slow)
+    # Step 1: MSA enrichment (always enabled for maximum robustness)
     PREDICT_INPUT="$json_file"
-    USE_MSA="false"
+    USE_MSA="true"
     if [ "$SKIP_MSA" != "1" ]; then
         MSA_DIR="$OUTPUT_DIR/${base_name}_msa"
         mkdir -p "$MSA_DIR"
@@ -77,7 +77,7 @@ run_single() {
             log_ts "MSA failed for $base_name, using raw JSON..."
         fi
     else
-        log_ts "[1/2] Skipping MSA (SKIP_MSA=1), using raw JSON..."
+        log_ts "[1/2] Skipping MSA enrichment (SKIP_MSA=1), model MSA pathway still active..."
     fi
 
     # Step 2: Mini prediction
