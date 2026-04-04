@@ -188,7 +188,7 @@ def _build_pxdesign_yaml(
     coords: dict,
     output_dir: str,
 ) -> str:
-    """Build PXDesign YAML: REC crop, RNA chains B/C as fixed context, linker-only binder_length."""
+    """Build PXDesign YAML: protein-only target (REC crop), linker-only binder_length."""
     yaml_path = os.path.join(output_dir, f"{variant_id}_pxdesign_input.yaml")
     abs_structure = os.path.abspath(baseline_structure)
     if not os.path.exists(abs_structure):
@@ -203,11 +203,6 @@ def _build_pxdesign_yaml(
     chains = {
         "A": {"crop": [f"1-{rec_end}"], "hotspots": hotspots[:10]},
     }
-    chain_ids = _get_structure_chain_ids(abs_structure)
-    if "B" in chain_ids:
-        chains["B"] = "all"
-    if "C" in chain_ids:
-        chains["C"] = "all"
 
     cfg = {
         "task_name": variant_id,
