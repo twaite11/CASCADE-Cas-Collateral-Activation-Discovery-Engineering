@@ -272,11 +272,13 @@ def run_pxdesign_generation(
     pxdesign_exec = pxdesign_bin.split() if " " in pxdesign_bin else [pxdesign_bin]
 
     cmd = [
-        *pxdesign_exec, "infer",
+        *pxdesign_exec, "pipeline",
         "-i", yaml_path,
         "-o", abs_out,
         "--N_sample", str(variant_count),
         "--dtype", "bf16",
+        "--preset", "preview",
+        "--N_max_runs", "1",
     ]
     if bias_json_path and os.path.exists(bias_json_path):
         log.info(f"  -> RL bias matrix loaded; will apply to designed sequences post-stitching")
@@ -330,9 +332,18 @@ def run_pxdesign_generation(
         for i, cif_path in enumerate(pred_glob[:variant_count]):
             try:
                 binder_seq = _sequence_from_structure_last_chain(cif_path)
-                if binder_seq and len(binder_seq) >= 10:
-                    p = _write_variant_or_fallback(i, binder_seq)
-                    fastas.append(p)
+                if not binder_seq or len(binder_seq) < 10:
+                    continue
+                x_frac = binder_seq.count("X") / len(binder_seq)
+                if x_frac > 0.5:
+                    log.error(
+                        f"CIF {cif_path}: {x_frac:.0%} of binder residues are unknown (X). "
+                        "This usually means 'pxdesign infer' was used instead of 'pxdesign pipeline'. "
+                        "Backbone-only outputs (xpb residues) have no sequence identity."
+                    )
+                    continue
+                p = _write_variant_or_fallback(i, binder_seq)
+                fastas.append(p)
             except Exception as ex:
                 log.warning(f"Could not extract sequence from {cif_path}: {ex}")
         return fastas
