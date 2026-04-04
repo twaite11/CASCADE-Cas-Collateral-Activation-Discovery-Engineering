@@ -34,7 +34,6 @@ def _get_structure_chain_ids(structure_path: str):
 def _sequence_from_structure(structure_path: str, chain_id: str = "A") -> str:
     """Extract protein sequence from CIF or PDB using Biopython."""
     from Bio.PDB import MMCIFParser, PDBParser
-    from Bio.PDB.Polypeptide import three_to_one
     ext = os.path.splitext(structure_path)[1].lower()
     parser = MMCIFParser(QUIET=True) if ext == ".cif" else PDBParser(QUIET=True)
     struct = parser.get_structure("s", structure_path)
@@ -43,11 +42,8 @@ def _sequence_from_structure(structure_path: str, chain_id: str = "A") -> str:
     for res in chain:
         if res.id[0] != " ":
             continue
-        resname = res.get_resname()
-        try:
-            seq.append(three_to_one(resname))
-        except KeyError:
-            seq.append(_AA3_TO_1.get(resname, "X"))
+        resname = res.get_resname().strip().upper()
+        seq.append(_AA3_TO_1.get(resname, "X"))
     return "".join(seq)
 
 
