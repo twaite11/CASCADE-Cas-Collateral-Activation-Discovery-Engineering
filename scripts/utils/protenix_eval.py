@@ -228,6 +228,46 @@ def _model_name_for_tier(model_tier, engine):
     return os.environ.get("PROTENIX_BASE_MODEL", "protenix_base_default_v1.0.0")
 
 
+def _resolve_cattle_prod_checkpoint(model_tier):
+    """
+    Resolve checkpoint directory for cattle-prod and fail loudly if missing.
+    Expected env vars:
+      - CATTLE_PROD_MINI_CKPT
+      - CATTLE_PROD_BASE_CKPT
+    """
+    env_name = "CATTLE_PROD_MINI_CKPT" if model_tier == "mini" else "CATTLE_PROD_BASE_CKPT"
+    ckpt = os.environ.get(env_name, "").strip()
+    if not ckpt:
+        raise RuntimeError(
+            f"{env_name} is required for cattle-prod inference to avoid silent featurize-only mode. "
+            f"Set {env_name} to a directory containing model.safetensors."
+        )
+    if not os.path.isdir(ckpt):
+        raise RuntimeError(f"{env_name} path is not a directory: {ckpt}")
+    st_path = os.path.join(ckpt, "model.safetensors")
+    if not os.path.isfile(st_path):
+        raise RuntimeError(f"{env_name} missing model.safetensors: {st_path}")
+    return ckpt
+
+
+def _summary_looks_uninitialized(summary_json_path):
+    """
+    Detect common silent-featurize signature in confidence summary.
+    """
+    if not summary_json_path or not os.path.isfile(summary_json_path):
+        return False
+    try:
+        with open(summary_json_path, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return False
+    iptm = float(data.get("iptm", 0.0) or 0.0)
+    ptm = float(data.get("ptm", 0.0) or 0.0)
+    af2_ig = float(data.get("af2_ig", data.get("af2_ig_score", 0.0)) or 0.0)
+    ranking = float(data.get("ranking_score", 0.0) or 0.0)
+    return iptm == 0.0 and ptm == 0.0 and af2_ig == 0.0 and ranking == 0.0
+
+
 def _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin):
     """Run MSA search step. Returns predict_input_path.
 
@@ -285,6 +325,9 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
     predict_input = _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin)
 
     model_name = _model_name_for_tier(model_tier, engine)
+    checkpoint_dir = None
+    if engine == "cattle-prod":
+        checkpoint_dir = _resolve_cattle_prod_checkpoint(model_tier)
     base_fallback = None
     if model_tier == "base":
         if engine == "cattle-prod":
@@ -300,6 +343,8 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
         "--use_msa", "true",
         "--use_default_params", "true",
     ]
+    if checkpoint_dir:
+        cmd.extend(["--checkpoint", checkpoint_dir])
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -327,5 +372,12 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
     struct_path, summary_path = _find_structure_and_summary(pred_dir)
     if not struct_path or not summary_path:
         raise FileNotFoundError(f"{engine} outputs not generated for {base_name}")
+    if engine == "cattle-prod" and _summary_looks_uninitialized(summary_path):
+        raise RuntimeError(
+            f"cattle-prod produced zeroed confidence metrics for {base_name}; "
+            f"this usually indicates missing/invalid checkpoint. "
+            f"mini_ckpt={os.environ.get('CATTLE_PROD_MINI_CKPT','')} "
+            f"base_ckpt={os.environ.get('CATTLE_PROD_BASE_CKPT','')}"
+        )
 
     return struct_path, summary_path

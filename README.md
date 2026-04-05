@@ -454,6 +454,8 @@ Environment variables:
 |:---------|:--------|:------------|
 | `EVAL_CMD` | `cattle-prod` or `/path/to/cattle-prod` | Structure prediction engine (auto-detected if on PATH) |
 | `PXDESIGN_CMD` | `/path/to/envs/pxdesign/bin/pxdesign` | Direct path to PXDesign binary in its conda env |
+| `CATTLE_PROD_MINI_CKPT` | `/workspace/models/cattle/mini` | Required for cattle-prod mini eval; directory with `model.safetensors` |
+| `CATTLE_PROD_BASE_CKPT` | `/workspace/models/cattle/base` | Required for cattle-prod base eval; directory with `model.safetensors` |
 | `CATTLE_PROD_BASE_MODEL` | `cattle_prod_base_default_v1.0.0` | Override Cattle-Prod base model name |
 | `CUDA_VERSION` | `12.1` | CUDA version for dual-env setup |
 
