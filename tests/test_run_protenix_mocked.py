@@ -66,3 +66,49 @@ class TestRunProtenixInferenceMocked:
 
         call_args = mock_run.call_args[0][0]
         assert "protenix_base_default_v1.0.0" in call_args
+
+    def test_cattle_prod_fallback_when_non_strict(self, tmpdir):
+        """If cattle-prod fails and strict mode is off, fallback to protenix."""
+        json_path = tmpdir / "test_OFF.json"
+        json_path.write_text(json.dumps([{"name": "test_OFF", "sequences": []}]))
+        out_dir = tmpdir / "out"
+        out_dir.mkdir()
+        pdb_path = str(out_dir / "test_OFF" / "model.pdb")
+        summary_path = str(out_dir / "test_OFF" / "model_summary.json")
+
+        fail = MagicMock(returncode=1, stdout="", stderr="TensorNotFound(\"relpos.linear.weight\")")
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("utils.protenix_eval.subprocess.run", side_effect=[fail, ok]) as mock_run, \
+             patch("utils.protenix_eval._find_cached_outputs", return_value=(None, None)), \
+             patch("utils.protenix_eval._find_structure_and_summary", return_value=(pdb_path, summary_path)), \
+             patch("utils.protenix_eval._run_msa_step", return_value=str(json_path)), \
+             patch("utils.protenix_eval._resolve_cattle_prod_checkpoint", return_value=str(tmpdir / "ckpt")), \
+             patch("utils.protenix_eval.shutil.which", return_value="protenix"), \
+             patch("utils.protenix_eval.EVAL_ENGINE", "cattle-prod"), \
+             patch("utils.protenix_eval.EVAL_BIN", "cattle-prod"), \
+             patch("utils.protenix_eval._CATTLE_PROD_STRICT", False):
+            run_protenix_inference(str(json_path), str(out_dir), model_tier="mini")
+
+        assert mock_run.call_count == 2
+        first_cmd = mock_run.call_args_list[0][0][0]
+        second_cmd = mock_run.call_args_list[1][0][0]
+        assert first_cmd[0] == "cattle-prod"
+        assert second_cmd[0] == "protenix"
+
+    def test_cattle_prod_strict_mode_raises(self, tmpdir):
+        """If strict mode is on, cattle-prod failure is raised."""
+        json_path = tmpdir / "test_OFF.json"
+        json_path.write_text(json.dumps([{"name": "test_OFF", "sequences": []}]))
+        out_dir = tmpdir / "out"
+        out_dir.mkdir()
+
+        fail = MagicMock(returncode=1, stdout="", stderr="TensorNotFound(\"relpos.linear.weight\")")
+        with patch("utils.protenix_eval.subprocess.run", return_value=fail), \
+             patch("utils.protenix_eval._find_cached_outputs", return_value=(None, None)), \
+             patch("utils.protenix_eval._run_msa_step", return_value=str(json_path)), \
+             patch("utils.protenix_eval._resolve_cattle_prod_checkpoint", return_value=str(tmpdir / "ckpt")), \
+             patch("utils.protenix_eval.EVAL_ENGINE", "cattle-prod"), \
+             patch("utils.protenix_eval.EVAL_BIN", "cattle-prod"), \
+             patch("utils.protenix_eval._CATTLE_PROD_STRICT", True):
+            with pytest.raises(Exception):
+                run_protenix_inference(str(json_path), str(out_dir), model_tier="mini")

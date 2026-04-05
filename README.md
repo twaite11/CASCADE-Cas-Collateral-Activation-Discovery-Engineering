@@ -457,7 +457,41 @@ Environment variables:
 | `CATTLE_PROD_MINI_CKPT` | `/workspace/models/cattle/mini` | Required for cattle-prod mini eval; directory with `model.safetensors` |
 | `CATTLE_PROD_BASE_CKPT` | `/workspace/models/cattle/base` | Required for cattle-prod base eval; directory with `model.safetensors` |
 | `CATTLE_PROD_BASE_MODEL` | `cattle_prod_base_default_v1.0.0` | Override Cattle-Prod base model name |
+| `CATTLE_PROD_STRICT` | `1` | `1` (default): fail fast on cattle-prod errors. `0`: fallback to Protenix with explicit warning. |
 | `CUDA_VERSION` | `12.1` | CUDA version for dual-env setup |
+
+---
+
+## Cattle-Prod Stability Runbook
+
+Use this when rolling out new checkpoints:
+
+```bash
+# 1) Convert and diagnose
+python /workspace/cattle-prod/cattle-prod/scripts/convert_weights.py model.pt \
+  -o /workspace/models/cattle/base/model.safetensors \
+  --mapping_version v1 \
+  --diagnostic_report /workspace/models/cattle/base/diag.json
+
+# 2) Verify converter output key coverage
+python /workspace/cattle-prod/cattle-prod/scripts/convert_weights.py \
+  --verify_safetensors /workspace/models/cattle/base/model.safetensors \
+  --mapping_version v1
+
+# 3) Verify runtime loadability from Rust side
+cattle-prod verify-checkpoint \
+  --checkpoint /workspace/models/cattle/base \
+  -n cattle_prod_base_default_v1.0.0
+```
+
+If (3) fails:
+- In production: set `CATTLE_PROD_STRICT=0` for explicit fallback while you remap the checkpoint.
+- For hard-fail enforcement: keep `CATTLE_PROD_STRICT=1`.
+
+Release gate before enabling strict cattle-prod mode:
+- converter diagnostics show no missing required keys
+- `verify-checkpoint` passes for mini/base checkpoint dirs
+- one CASCADE generation produces non-default confidence metrics (not all zeros / constant fallback-style fitness)
 
 ---
 

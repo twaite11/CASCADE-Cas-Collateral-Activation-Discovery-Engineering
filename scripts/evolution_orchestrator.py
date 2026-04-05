@@ -532,7 +532,10 @@ def main_evolution_loop():
 
                 off_dist = calculate_hepn_shift(off_pdb, h1_idx, h2_idx)
                 on_dist = calculate_hepn_shift(on_pdb, h1_idx, h2_idx)
-                print(f"     [Filter] OFF: {off_dist:.1f}A | ON: {on_dist:.1f}A")
+                log.info(
+                    f"[HEPN mini] {variant_name} | OFF={off_dist:.1f}A | ON={on_dist:.1f}A | "
+                    f"delta={off_dist - on_dist:.1f}A"
+                )
                 has_potential = (off_dist >= MIN_OFF_DISTANCE) and (on_dist <= MAX_ON_DISTANCE)
 
                 offtarget_by_mismatch = {}
@@ -575,7 +578,13 @@ def main_evolution_loop():
                             offtarget_by_mismatch[n_mismatch] = MIN_OFF_DISTANCE  # Assume specific on failure
                     if offtarget_by_mismatch:
                         mm_str = " | ".join(f"{k}mm:{v:.1f}A" for k, v in sorted(offtarget_by_mismatch.items()))
-                        print(f"     [Specificity] {mm_str}")
+                        log.info(f"[Specificity] {variant_name} | {mm_str}")
+
+                # Always emit scored distances (true_on_dist may come from base model if filter passed).
+                log.info(
+                    f"[HEPN scored] {variant_name} | OFF={off_dist:.1f}A | ON={true_on_dist:.1f}A | "
+                    f"delta={off_dist - true_on_dist:.1f}A"
+                )
 
                 fitness = compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None)
                 if "fallback" in variant_name:

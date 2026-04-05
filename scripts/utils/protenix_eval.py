@@ -40,6 +40,7 @@ def _detect_eval_engine():
 
 EVAL_BIN, EVAL_ENGINE = _detect_eval_engine()
 log.info(f"CASCADE eval engine: {EVAL_ENGINE} ({EVAL_BIN})")
+_CATTLE_PROD_STRICT = os.environ.get("CATTLE_PROD_STRICT", "1").strip().lower() not in {"0", "false", "no"}
 
 # RNA Constants (Must match what we defined in 01_parse_and_annotate.py)
 DUMMY_SPACER_RNA = "GUCGACUGACGUACGUACGUACGU"
@@ -268,6 +269,34 @@ def _summary_looks_uninitialized(summary_json_path):
     return iptm == 0.0 and ptm == 0.0 and af2_ig == 0.0 and ranking == 0.0
 
 
+def _run_pred_command(cmd, engine, base_name, model_tier, base_fallback=None):
+    """
+    Execute prediction command with engine-specific fallbacks.
+    """
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0 and engine == "protenix" and "No such command" in (result.stderr or ""):
+        cmd = [
+            cmd[0], "predict",
+            "--input", cmd[3],  # predict_input
+            "--out_dir", cmd[5],  # out_dir
+            "--model_name", cmd[7],  # model_name
+            "--use_msa", "true",
+            "--use_default_params", "true",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0 and model_tier == "base" and base_fallback:
+        if "not supported" in (result.stderr or ""):
+            log.warning(f"Base model {cmd[7]} not supported; falling back to {base_fallback}")
+            cmd = [base_fallback if c == cmd[7] else c for c in cmd]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+    return cmd
+
+
 def _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin):
     """Run MSA search step. Returns predict_input_path.
 
@@ -321,6 +350,7 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
         return cached_struct, cached_summary
 
     log.info(f"Starting {engine} {tier_label} inference for {base_name} (this may take several minutes)...")
+    log.info(f"  eval_decision: engine={engine} strict_mode={_CATTLE_PROD_STRICT}")
 
     predict_input = _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin)
 
@@ -347,27 +377,39 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
         cmd.extend(["--checkpoint", checkpoint_dir])
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0 and engine == "protenix" and "No such command" in (result.stderr or ""):
-            cmd = [
-                engine_bin, "predict",
-                "--input", predict_input,
-                "--out_dir", out_dir,
-                "--model_name", model_name,
-                "--use_msa", "true",
-                "--use_default_params", "true",
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0 and model_tier == "base" and base_fallback:
-            if "not supported" in (result.stderr or ""):
-                log.warning(f"Base model {model_name} not supported; falling back to {base_fallback}")
-                cmd = [base_fallback if c == model_name else c for c in cmd]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+        _run_pred_command(cmd, engine, base_name, model_tier, base_fallback=base_fallback)
     except subprocess.CalledProcessError as e:
-        print(f"{engine} evaluation failed for {base_name}:\n{e.stderr}")
-        raise
+        if engine == "cattle-prod" and not _CATTLE_PROD_STRICT:
+            fallback_bin = shutil.which("protenix")
+            if fallback_bin:
+                log.warning(
+                    f"cattle-prod failed for {base_name}, strict mode disabled; "
+                    f"falling back to protenix ({fallback_bin})"
+                )
+                fallback_model = _model_name_for_tier(model_tier, "protenix")
+                fb_base_fallback = "protenix_base_default_v0.5.0" if model_tier == "base" else None
+                fallback_cmd = [
+                    fallback_bin, "pred",
+                    "-i", predict_input,
+                    "-o", out_dir,
+                    "-n", fallback_model,
+                    "--use_msa", "true",
+                    "--use_default_params", "true",
+                ]
+                _run_pred_command(
+                    fallback_cmd,
+                    "protenix",
+                    base_name,
+                    model_tier,
+                    base_fallback=fb_base_fallback,
+                )
+                engine = "protenix-fallback"
+            else:
+                print(f"{engine} evaluation failed for {base_name}:\n{e.stderr}")
+                raise
+        else:
+            print(f"{engine} evaluation failed for {base_name}:\n{e.stderr}")
+            raise
 
     struct_path, summary_path = _find_structure_and_summary(pred_dir)
     if not struct_path or not summary_path:
