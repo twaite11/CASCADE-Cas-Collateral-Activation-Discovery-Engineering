@@ -247,6 +247,40 @@ Or run everything at once:
 
 ---
 
+## Live Dashboard (SQLite-First Architecture)
+
+CASCADE now includes a thin dashboard backend designed for VPS operation:
+
+- Pipeline writes continue to `SQLite` (`metadata/cas13_variants.db`)
+- `FastAPI` service reads SQLite in `WAL` mode and serves aggregated endpoints
+- Web frontend auto-refreshes every N seconds for near-real-time visibility
+- Storage is adapter-based so `Postgres` can be added later without rewriting API handlers
+- Service is read-only (no mutation of pipeline outputs)
+
+Start the dashboard:
+
+```bash
+pip install -r requirements.txt
+uvicorn dashboard_backend.main:app --host 0.0.0.0 --port 8000
+```
+
+Then open:
+
+- API health: `http://<server-ip>:8000/health`
+- Dashboard UI: `http://<server-ip>:8000/dashboard`
+- Runbook: `dashboard_backend/README.md`
+
+### Concise Variant Naming
+
+Generated variant IDs are now concise and generation-stable:
+
+- `Lxxxxxx_g01_v00`
+- `Lxxxxxx_g01_v00_fb` (fallback sequence)
+
+This replaces compounding names like `..._variant_0_variant_1_ON` and keeps per-generation tracking readable.
+
+---
+
 ## 📂 Project Structure
 
 ```
@@ -257,6 +291,8 @@ CASCADE/
 ├── 📄 RL_TRAINING_FORMAT.md            # Post-training data format (DRAKES / ProteinMPNN)
 ├── 📄 workflow_diagram.html            # Interactive Mermaid workflow diagram
 ├── 📄 requirements.txt                 # Python dependencies
+├── 📁 dashboard_backend/               # FastAPI aggregation service (SQLite WAL)
+├── 📁 dashboard_frontend/              # Auto-refresh web UI
 │
 ├── 📁 data/
 │   └── 📁 mined_hits/                  # Input: FASTAs + metadata CSVs

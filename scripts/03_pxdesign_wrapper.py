@@ -10,6 +10,7 @@ import os
 import glob
 import logging
 from pathlib import Path
+import hashlib
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +21,33 @@ _AA3_TO_1 = {
     "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
     "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
 }
+
+
+def _short_lineage_tag(seed: str, fallback: str = "lineage") -> str:
+    """Compact deterministic lineage tag."""
+    seed = (seed or "").strip()
+    if not seed:
+        seed = fallback
+    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:6]
+    return f"L{digest}"
+
+
+def _compact_variant_name(
+    lineage_seed: str,
+    generation_num: int,
+    variant_index: int,
+    fallback: bool = False,
+) -> str:
+    """
+    Concise, generation-stable variant naming:
+      Lxxxxxx_g01_v00
+      Lxxxxxx_g01_v00_fb
+    """
+    tag = _short_lineage_tag(lineage_seed)
+    base = f"{tag}_g{generation_num:02d}_v{variant_index:02d}"
+    if fallback:
+        return f"{base}_fb"
+    return base
 
 
 def _get_structure_chain_ids(structure_path: str):
@@ -231,6 +259,8 @@ def run_pxdesign_generation(
     metadata_override=None,
     baseline_fasta_path: str = None,
     base_json_dir: str = None,
+    generation_num: int = 1,
+    lineage_seed: str | None = None,
 ):
     """
     Runs PXDesign via: pxdesign infer -i <yaml> -o <dir> --N_sample N
@@ -292,6 +322,8 @@ def run_pxdesign_generation(
         log.error("PXDesign timed out after 1 hour")
         raise
 
+    name_seed = lineage_seed or variant_id
+
     def _write_variant_or_fallback(i: int, binder_seq: str) -> str:
         """Stitch HEPN into binder; resolve X residues; apply RL bias; on failure write fallback."""
         # Resolve X's in the binder before stitching (use baseline linker region as reference)
@@ -302,15 +334,26 @@ def run_pxdesign_generation(
             full = _resolve_unknown_residues(full, full_seq)
             # Apply RL bias to linker regions (closed-loop reinforcement)
             full = _apply_bias_to_sequence(full, bias_json_path, coords)
-            name = f"{variant_id}_variant_{i}"
+            name = _compact_variant_name(
+                lineage_seed=name_seed,
+                generation_num=max(1, int(generation_num)),
+                variant_index=i,
+                fallback=False,
+            )
             fasta_path = os.path.join(output_dir, f"{name}.fasta")
             with open(fasta_path, "w") as f:
                 f.write(f">{name}\n{full}\n")
             return fasta_path
         # Fallback: baseline sequence; name contains "fallback" so orchestrator applies penalty
-        fallback_path = os.path.join(output_dir, f"{variant_id}_variant_fallback_{i}.fasta")
+        fallback_name = _compact_variant_name(
+            lineage_seed=name_seed,
+            generation_num=max(1, int(generation_num)),
+            variant_index=i,
+            fallback=True,
+        )
+        fallback_path = os.path.join(output_dir, f"{fallback_name}.fasta")
         with open(fallback_path, "w") as f:
-            f.write(f">{variant_id}_variant_fallback_{i}\n{full_seq}\n")
+            f.write(f">{fallback_name}\n{full_seq}\n")
         log.warning(f"Stitching failed for design {i}; writing baseline as fallback (will receive penalty)")
         return fallback_path
 

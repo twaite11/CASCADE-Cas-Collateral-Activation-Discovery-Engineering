@@ -477,6 +477,8 @@ def main_evolution_loop():
                     metadata_override=metadata_override,
                     baseline_fasta_path=baseline_fasta_path,
                     base_json_dir=BASE_JSON_DIR,
+                    generation_num=generation_counter,
+                    lineage_seed=crrna_lookup_id,
                 )
             except Exception as e:
                 log.error(f"PXDesign failed: {e}. Skipping this generation...")

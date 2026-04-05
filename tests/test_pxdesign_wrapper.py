@@ -22,6 +22,7 @@ spec.loader.exec_module(pxd)
 generate_frozen_rec_config = pxd.generate_frozen_rec_config
 _resolve_unknown_residues = pxd._resolve_unknown_residues
 _apply_bias_to_sequence = pxd._apply_bias_to_sequence
+_compact_variant_name = pxd._compact_variant_name
 
 
 class TestGenerateFrozenRecConfig:
@@ -120,3 +121,17 @@ class TestApplyBiasToSequence:
         seq = "AAAAAHHHAABB"
         result = _apply_bias_to_sequence(seq, str(bias_file), coords)
         assert result[6] == "H"  # Unchanged: inside HEPN
+
+
+class TestCompactVariantNaming:
+    """Ensure concise stable naming across generations."""
+
+    def test_compact_name_shape(self):
+        name = _compact_variant_name("3174363721_ORF_Score_0.928", generation_num=3, variant_index=1)
+        assert name.startswith("L")
+        assert "_g03_v01" in name
+        assert "_variant_" not in name
+
+    def test_compact_fallback_suffix(self):
+        name = _compact_variant_name("baseline_id", generation_num=12, variant_index=0, fallback=True)
+        assert name.endswith("_fb")

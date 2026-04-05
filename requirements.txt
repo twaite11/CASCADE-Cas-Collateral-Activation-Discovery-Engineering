@@ -2,6 +2,8 @@ numpy
 biopython
 pyyaml
 pandas
+fastapi
+uvicorn
 
 # Eval engine (one required):
 # Option A (recommended): cattle-prod — Rust implementation, faster inference
