@@ -500,6 +500,10 @@ def main_evolution_loop():
                     continue
 
                 log.info(f"Evaluating variant {variant_name} (Protenix mini OFF/ON - may take 2-5 min each)...")
+                log.info(
+                    f"[VariantMeta] gen={generation_counter} baseline={baseline_id} "
+                    f"variant={variant_name} muts={len(mutations_made)} h1={h1_idx} h2={h2_idx} crrna={crrna_lookup_id}"
+                )
                 off_json, on_json = generate_evaluation_jsons(
                     variant_fasta, baseline_id, METADATA_FILE, FAST_EVAL_DIR, crrna_lookup_id=crrna_lookup_id
                 )
@@ -529,8 +533,15 @@ def main_evolution_loop():
 
                 off_dist = calculate_hepn_shift(off_pdb, h1_idx, h2_idx)
                 on_dist = calculate_hepn_shift(on_pdb, h1_idx, h2_idx)
-                print(f"     [Filter] OFF: {off_dist:.1f}A | ON: {on_dist:.1f}A")
+                log.info(
+                    f"[HEPN mini] {variant_name} OFF={off_dist:.1f}A ON={on_dist:.1f}A "
+                    f"delta={off_dist - on_dist:.1f}A"
+                )
                 has_potential = (off_dist >= MIN_OFF_DISTANCE) and (on_dist <= MAX_ON_DISTANCE)
+                log.info(
+                    f"[FilterGate] {variant_name} pass={has_potential} "
+                    f"(OFF>={MIN_OFF_DISTANCE:.1f}A and ON<={MAX_ON_DISTANCE:.1f}A)"
+                )
 
                 offtarget_by_mismatch = {}
                 hf_pdb_path = None
@@ -572,12 +583,16 @@ def main_evolution_loop():
                             offtarget_by_mismatch[n_mismatch] = MIN_OFF_DISTANCE  # Assume specific on failure
                     if offtarget_by_mismatch:
                         mm_str = " | ".join(f"{k}mm:{v:.1f}A" for k, v in sorted(offtarget_by_mismatch.items()))
-                        print(f"     [Specificity] {mm_str}")
+                        log.info(f"[Specificity] {variant_name} {mm_str}")
 
                 fitness = compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None)
                 if "fallback" in variant_name:
                     fitness -= FALLBACK_FITNESS_PENALTY
                     log.info(f"Fallback variant {variant_name}: applying penalty ({FALLBACK_FITNESS_PENALTY})")
+                log.info(
+                    f"[HEPN scored] {variant_name} OFF={off_dist:.1f}A ON={true_on_dist:.1f}A "
+                    f"delta={off_dist - true_on_dist:.1f}A iptm={iptm:.3f} af2_ig={af2_ig:.3f} fitness={fitness:.2f}"
+                )
                 gym.register_evaluation(
                     variant_name, mutations_made, off_dist, true_on_dist, iptm,
                     af2_ig_score=af2_ig, is_full_ternary=has_potential,
