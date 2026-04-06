@@ -285,6 +285,7 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
         for fa_path in fa_glob:
             with open(fa_path) as f:
                 lines = f.readlines()
+            record_idx = 0
             i = 0
             while i < len(lines):
                 header = lines[i].strip()
@@ -294,7 +295,13 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
                     seq_lines.append(lines[i].strip())
                     i += 1
                 raw_seq = "".join(seq_lines)
-                if not raw_seq or header.startswith(">T="):
+                record_idx += 1
+                if not raw_seq:
+                    continue
+                # Record 1 is always the input/native sequence — skip it.
+                # Also skip any record explicitly marked as template.
+                if record_idx == 1 or header.startswith(">T="):
+                    log.debug(f"  MPNN skipping input record: {header[:80]}")
                     continue
                 # Multi-chain outputs use '/' as chain separator — take
                 # the last chain (binder) since we only want the designed
@@ -303,6 +310,9 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
                     seq = raw_seq.split("/")[-1]
                 else:
                     seq = raw_seq
+                x_in_design = seq.count("X")
+                if x_in_design > 0:
+                    log.debug(f"  MPNN record {record_idx}: {len(seq)}-aa, {x_in_design} X residues")
                 score = float("inf")
                 for part in header.split(","):
                     part = part.strip()
@@ -311,6 +321,9 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
                             score = float(part.split("=")[1])
                         except ValueError:
                             pass
+                if seq.count("X") / max(len(seq), 1) > 0.5:
+                    log.debug(f"  MPNN record {record_idx} is >50%% X — likely input echo, skipping")
+                    continue
                 if score < best_score:
                     best_score = score
                     best_seq = seq
@@ -664,8 +677,12 @@ def _parse_pxdesign_outputs(
                 if x_frac > 0.5:
                     if mpnn_available:
                         log.info(f"CIF {cif_path}: backbone-only ({x_frac:.0%} X) — running ProteinMPNN for sequence design")
-                        binder_seq = _run_proteinmpnn_on_cif(cif_path)
-                        if not binder_seq:
+                        mpnn_seq = _run_proteinmpnn_on_cif(cif_path)
+                        if mpnn_seq:
+                            mpnn_x = mpnn_seq.count("X")
+                            log.info(f"  MPNN returned {len(mpnn_seq)}-aa, {mpnn_x} X residues ({mpnn_seq[:30]}...)")
+                            binder_seq = mpnn_seq
+                        else:
                             log.warning(f"ProteinMPNN failed on {cif_path}; resolving from baseline")
                             binder_seq = _sequence_from_structure_last_chain(cif_path)
                     else:
