@@ -438,13 +438,14 @@ def _run_mpnn_refinement(
                                       replace=False, p=unfreeze_weights)
         designable_positions = {all_linker[i] for i in unfreeze_indices}
 
-        # MPNN uses 1-based positions in the chain. Chain B is the binder.
-        # Fixed = all positions NOT in designable set (1-based).
-        total_binder_len = coords.get("seq_len", hepn2_start + 50) - rec_end
-        fixed_in_B = [str(p - rec_end + 1) for p in range(rec_end, rec_end + total_binder_len)
+        # MPNN fixed_positions_jsonl: {pdb_name: {chain: [1-based int positions]}}
+        # Fixed = all positions NOT in designable set. Positions are 1-based
+        # relative to the chain as parsed by MPNN.
+        # Chain B has 290 residues (the binder); find which to fix.
+        binder_len = 290  # from CIF inspection
+        fixed_in_B = [p - rec_end + 1 for p in range(rec_end, rec_end + binder_len)
                       if p not in designable_positions]
-        # Chain A (target crop) is always fixed
-        fixed_positions = {"backbone": {"A": ["1"], "B": fixed_in_B}}
+        fixed_positions = {"backbone": {"A": [1], "B": fixed_in_B}}
         fixed_pos_path = os.path.join(tmp, "fixed_positions.jsonl")
         with open(fixed_pos_path, "w") as f:
             f.write(json.dumps(fixed_positions) + "\n")
@@ -452,42 +453,30 @@ def _run_mpnn_refinement(
         log.info(f"  [MPNN refine] gen={generation_num}: unfreezing {len(designable_positions)}/{len(all_linker)} "
                  f"linker positions ({unfreeze_frac:.0%}), {len(bias)} RL bias entries")
 
-        # Build PSSM from RL bias (if available)
-        pssm_path = None
-        if bias:
-            _AA_ORDER = "ACDEFGHIKLMNPQRSTVWY"
-            pssm_dict = {}
-            for pos in designable_positions:
-                pos_str = str(pos + 1)
-                if pos_str in bias:
-                    row = [bias[pos_str].get(aa, 0.0) for aa in _AA_ORDER]
-                else:
-                    row = [0.0] * len(_AA_ORDER)
-                pssm_dict[str(pos - rec_end + 1)] = row
-            if pssm_dict:
-                pssm_data = {"backbone": {"B": pssm_dict}}
-                pssm_path = os.path.join(tmp, "pssm.jsonl")
-                with open(pssm_path, "w") as f:
-                    f.write(json.dumps(pssm_data) + "\n")
-                log.info(f"  [MPNN refine] PSSM bias applied to {len(pssm_dict)} positions")
-
-        # Run MPNN with fixed positions + PSSM
+        # Run MPNN with fixed positions (PSSM bias added in future iteration)
         out_dir = os.path.join(tmp, "output")
         os.makedirs(out_dir)
+
+        # Higher temperature for designable positions = more diversity;
+        # ramp down over generations for exploitation
+        design_temp = max(0.1, 0.3 - 0.02 * generation_num)
+
         mpnn_cmd = [
             "python", run_script,
             "--jsonl_path", jsonl_path,
             "--out_folder", out_dir,
             "--num_seq_per_target", str(variant_count),
-            "--sampling_temp", str(temperature),
+            "--sampling_temp", str(design_temp),
             "--batch_size", "1",
             "--fixed_positions_jsonl", fixed_pos_path,
         ]
-        if pssm_path:
-            mpnn_cmd.extend(["--pssm_jsonl", pssm_path, "--pssm_multi", "0.5"])
 
         try:
-            subprocess.run(mpnn_cmd, capture_output=True, text=True, timeout=300, check=True)
+            result = subprocess.run(mpnn_cmd, capture_output=True, text=True, timeout=300, check=True)
+        except subprocess.CalledProcessError as e:
+            stderr_tail = (e.stderr or "")[-1500:]
+            log.warning(f"MPNN refinement failed (exit {e.returncode}): {stderr_tail}")
+            return []
         except Exception as e:
             log.warning(f"MPNN refinement failed: {e}")
             return []
