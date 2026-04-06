@@ -191,6 +191,21 @@ def _cif_to_enzyme_pdb(cif_path: str, output_pdb: str) -> bool:
         if new_id and new_id != chain.id:
             chain.id = new_id
 
+    # ProteinMPNN requires standard amino acid names. Backbone-only CIFs from
+    # PXDesign infer label every residue as UNK/XQB — replace with ALA so MPNN
+    # can design real sequences for the backbone geometry.
+    n_renamed = 0
+    for chain in protein_chains:
+        for res in chain:
+            if res.id[0] != " ":
+                continue
+            resname = res.get_resname().strip().upper()
+            if resname not in _AA3_TO_1:
+                res.resname = "ALA"
+                n_renamed += 1
+    if n_renamed:
+        log.info(f"  Renamed {n_renamed} non-standard residues to ALA for ProteinMPNN")
+
     class ProteinOnlySelect(Select):
         def accept_chain(self, chain):
             return chain.id in remap.values()
