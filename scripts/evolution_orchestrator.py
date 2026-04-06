@@ -112,6 +112,14 @@ def _load_validated_baseline_ids():
             bid = line.strip()
             if bid:
                 ids.add(bid)
+    # Empty file or validation wrote no IDs (e.g. ViennaRNA missing): do not restrict to zero baselines.
+    if not ids:
+        log.warning(
+            "%s is empty or has no IDs — using all baselines from metadata. "
+            "Install ViennaRNA and re-run validation if you need structure-filtered IDs.",
+            VALIDATED_IDS_FILE,
+        )
+        return None
     return ids
 
 # --- Biophysical Thresholds ---
@@ -424,7 +432,7 @@ def main_evolution_loop():
         baseline_ids = [b for b in baseline_ids if b in validated]
         log.info(f"Restricting to {len(baseline_ids)} baselines with validated CRISPR repeats (from {VALIDATED_IDS_FILE})")
     else:
-        log.info(f"Using all {len(baseline_ids)} baselines (no {VALIDATED_IDS_FILE})")
+        log.info(f"Using all {len(baseline_ids)} baselines (not restricting by {VALIDATED_IDS_FILE})")
 
     # Baseline object: (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
     lineage_queue = [
