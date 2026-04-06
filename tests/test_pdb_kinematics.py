@@ -37,6 +37,33 @@ class TestExtractProtenixScores:
         scores = extract_protenix_scores(str(p))
         assert scores["af2_ig"] == 0.77
 
+    def test_af2_ig_derived_from_chain_pair_iptm(self, tmpdir):
+        """When af2_ig key is missing, derive from chain_pair_iptm off-diagonal."""
+        data = {
+            "iptm": 0.85,
+            "ptm": 0.80,
+            "ranking_score": 0.82,
+            "chain_pair_iptm": [
+                [1.0, 0.7, 0.6],
+                [0.7, 1.0, 0.5],
+                [0.6, 0.5, 1.0],
+            ],
+        }
+        p = tmpdir / "chain_pair.json"
+        p.write_text(json.dumps(data))
+        scores = extract_protenix_scores(str(p))
+        expected = (0.7 + 0.6 + 0.7 + 0.5 + 0.6 + 0.5) / 6.0
+        assert abs(scores["af2_ig"] - expected) < 0.001
+
+    def test_af2_ig_iptm_ptm_proxy_fallback(self, tmpdir):
+        """When no chain_pair_iptm, fall back to 0.8*iptm + 0.2*ptm."""
+        data = {"iptm": 0.90, "ptm": 0.80}
+        p = tmpdir / "proxy.json"
+        p.write_text(json.dumps(data))
+        scores = extract_protenix_scores(str(p))
+        expected = 0.8 * 0.90 + 0.2 * 0.80
+        assert abs(scores["af2_ig"] - expected) < 0.001
+
 
 class TestCalculateHepnShift:
     """Test calculate_hepn_shift."""

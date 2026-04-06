@@ -49,6 +49,24 @@ from utils.protenix_eval import (
 )
 from utils.pdb_kinematics import calculate_hepn_shift, extract_protenix_scores, find_structure_files
 
+
+def _find_mini_summary(eval_dir, variant_name, state_suffix):
+    """Locate the summary JSON from a mini inference run for a variant's ON or OFF state."""
+    import glob as _glob
+    pred_dir = os.path.join(eval_dir, f"{variant_name}_{state_suffix}")
+    if not os.path.isdir(pred_dir):
+        return None, None
+    summary_files = _glob.glob(os.path.join(pred_dir, "**", "*_summary*.json"), recursive=True)
+    if not summary_files:
+        summary_files = _glob.glob(os.path.join(pred_dir, "**", "*_confidence*.json"), recursive=True)
+    struct_files = _glob.glob(os.path.join(pred_dir, "**", "*.cif"), recursive=True)
+    if not struct_files:
+        struct_files = _glob.glob(os.path.join(pred_dir, "**", "*.pdb"), recursive=True)
+    if struct_files and summary_files:
+        return struct_files[0], summary_files[0]
+    return None, None
+
+
 # --- Configuration ---
 METADATA_FILE = "../metadata/variant_domain_metadata.json"
 BASE_JSON_DIR = "../jsons"
@@ -540,16 +558,29 @@ def main_evolution_loop():
 
                 off_dist = calculate_hepn_shift(off_pdb, h1_idx, h2_idx)
                 on_dist = calculate_hepn_shift(on_pdb, h1_idx, h2_idx)
-                log.info(
-                    f"[HEPN mini] {variant_name} | OFF={off_dist:.1f}A | ON={on_dist:.1f}A | "
-                    f"delta={off_dist - on_dist:.1f}A"
-                )
+
                 has_potential = (off_dist >= MIN_OFF_DISTANCE) and (on_dist <= MAX_ON_DISTANCE)
+                log.info(
+                    f"[HEPN mini] {variant_name} OFF={off_dist:.1f}A ON={on_dist:.1f}A delta={off_dist - on_dist:.1f}A"
+                )
+                log.info(f"[FilterGate] {variant_name} pass={has_potential} (OFF>={MIN_OFF_DISTANCE}A and ON<={MAX_ON_DISTANCE}A)")
 
                 offtarget_by_mismatch = {}
                 hf_pdb_path = None
-                iptm, af2_ig = 0.4, 0.0
                 true_on_dist = on_dist
+
+                # Extract mini-model scores as baseline (avoids 0.4/0.0 defaults)
+                mini_on_summary = None
+                try:
+                    _, mini_on_summary = _find_mini_summary(FAST_EVAL_DIR, variant_name, "ON")
+                except Exception:
+                    pass
+                if mini_on_summary:
+                    mini_scores = extract_protenix_scores(mini_on_summary)
+                    iptm = mini_scores["iptm"] if mini_scores["iptm"] > 0.0 else 0.4
+                    af2_ig = mini_scores["af2_ig"]
+                else:
+                    iptm, af2_ig = 0.4, 0.0
 
                 if has_potential:
                     log.info(f"Filter passed. Running {EVAL_ENGINE} base ternary (may take 10-30 min)...")
@@ -588,10 +619,12 @@ def main_evolution_loop():
                         mm_str = " | ".join(f"{k}mm:{v:.1f}A" for k, v in sorted(offtarget_by_mismatch.items()))
                         log.info(f"[Specificity] {variant_name} | {mm_str}")
 
-                # Always emit scored distances (true_on_dist may come from base model if filter passed).
+                score_source = "base" if has_potential else ("mini" if mini_on_summary else "default")
                 log.info(
-                    f"[HEPN scored] {variant_name} | OFF={off_dist:.1f}A | ON={true_on_dist:.1f}A | "
-                    f"delta={off_dist - true_on_dist:.1f}A"
+                    f"[HEPN scored] {variant_name} OFF={off_dist:.1f}A ON={true_on_dist:.1f}A "
+                    f"delta={off_dist - true_on_dist:.1f}A iptm={iptm:.3f} af2_ig={af2_ig:.3f} "
+                    f"fitness={compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None):.2f} "
+                    f"(scores from {score_source})"
                 )
 
                 fitness = compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None)

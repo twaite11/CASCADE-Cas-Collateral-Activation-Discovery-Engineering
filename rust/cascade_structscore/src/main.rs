@@ -172,11 +172,39 @@ fn cmd_extract_scores(summary: &Path) {
         .get("ranking_score")
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
-    let af2_ig = data
+    let mut af2_ig = data
         .get("af2_ig")
         .and_then(Value::as_f64)
         .or_else(|| data.get("af2_ig_score").and_then(Value::as_f64))
         .unwrap_or(0.0);
+
+    // Derive AF2-IG from chain_pair_iptm off-diagonal mean when explicit key is absent
+    if af2_ig == 0.0 {
+        if let Some(cp_matrix) = data.get("chain_pair_iptm").and_then(Value::as_array) {
+            let n = cp_matrix.len();
+            let mut sum = 0.0_f64;
+            let mut count = 0_u64;
+            for (i, row) in cp_matrix.iter().enumerate() {
+                if let Some(row_arr) = row.as_array() {
+                    for (j, val) in row_arr.iter().enumerate() {
+                        if i != j {
+                            if let Some(v) = val.as_f64() {
+                                sum += v;
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            if count > 0 {
+                af2_ig = sum / count as f64;
+            }
+        }
+        // Fallback: weighted proxy from global scores
+        if af2_ig == 0.0 && (iptm > 0.0 || ptm > 0.0) {
+            af2_ig = 0.8 * iptm + 0.2 * ptm;
+        }
+    }
 
     let output = json!({
         "iptm": iptm,
