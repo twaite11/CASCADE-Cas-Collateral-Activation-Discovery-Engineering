@@ -1,5 +1,6 @@
 """
-Unit tests for 03_pxdesign_wrapper: generate_frozen_rec_config and X-resolution.
+Unit tests for 03_pxdesign_wrapper: generate_frozen_rec_config, X-resolution,
+sequence-level linker mutator.
 No PXDesign/GPU - we do NOT call run_pxdesign_generation.
 
 All coordinates are 0-based Python-slice convention:
@@ -22,6 +23,9 @@ spec.loader.exec_module(pxd)
 generate_frozen_rec_config = pxd.generate_frozen_rec_config
 _resolve_unknown_residues = pxd._resolve_unknown_residues
 _apply_bias_to_sequence = pxd._apply_bias_to_sequence
+_compact_variant_name = pxd._compact_variant_name
+_generate_variants_sequence_mutator = pxd._generate_variants_sequence_mutator
+_pxdesign_available = pxd._pxdesign_available
 
 
 class TestGenerateFrozenRecConfig:
@@ -93,7 +97,7 @@ class TestResolveUnknownResidues:
 
     def test_x_at_end_past_baseline(self):
         result = _resolve_unknown_residues("ACX", "AC")
-        assert result == "ACG"  # Past baseline → Glycine
+        assert result == "ACG"  # Past baseline -> Glycine
 
 
 class TestApplyBiasToSequence:
@@ -105,7 +109,7 @@ class TestApplyBiasToSequence:
 
     def test_bias_applied_in_linker(self, tmpdir):
         bias_file = tmpdir / "bias.json"
-        # Position 3 (1-based) = index 2 → in linker1 region
+        # Position 3 (1-based) = index 2 -> in linker1 region
         bias_file.write_text(json.dumps({"3": {"W": 3.0}}))
         coords = {"rec_end": 0, "hepn1_start": 5, "hepn1_end": 8, "hepn2_start": 10}
         seq = "AAAAAHHHAABB"
@@ -114,9 +118,108 @@ class TestApplyBiasToSequence:
 
     def test_bias_not_applied_in_hepn(self, tmpdir):
         bias_file = tmpdir / "bias.json"
-        # Position 7 (1-based) = index 6 → in HEPN1 region [5:8]
+        # Position 7 (1-based) = index 6 -> in HEPN1 region [5:8]
         bias_file.write_text(json.dumps({"7": {"W": 3.0}}))
         coords = {"rec_end": 0, "hepn1_start": 5, "hepn1_end": 8, "hepn2_start": 10}
         seq = "AAAAAHHHAABB"
         result = _apply_bias_to_sequence(seq, str(bias_file), coords)
         assert result[6] == "H"  # Unchanged: inside HEPN
+
+
+class TestCompactVariantNaming:
+    """Ensure concise stable naming across generations."""
+
+    def test_compact_name_shape(self):
+        name = _compact_variant_name("3174363721_ORF_Score_0.928", generation_num=3, variant_index=1)
+        assert name.startswith("L")
+        assert "_g03_v01" in name
+        assert "_variant_" not in name
+
+    def test_compact_fallback_suffix(self):
+        name = _compact_variant_name("baseline_id", generation_num=12, variant_index=0, fallback=True)
+        assert name.endswith("_fb")
+
+
+class TestSequenceMutator:
+    """Test _generate_variants_sequence_mutator (pure-sequence linker mutator)."""
+
+    COORDS = {
+        "rec_end": 40,
+        "hepn1_start": 60,
+        "hepn1_end": 80,
+        "hepn2_start": 90,
+        "hepn2_end": 100,
+        "linker1_len": 20,
+        "linker2_len": 10,
+        "binder_length": 30,
+        "seq_len": 100,
+    }
+    SEQ = "A" * 40 + "G" * 20 + "H" * 20 + "G" * 10 + "H" * 10
+
+    def test_returns_correct_count(self):
+        variants = _generate_variants_sequence_mutator(
+            self.SEQ, self.COORDS, variant_count=5, bias_json_path=None,
+            generation_num=1, seed=0,
+        )
+        assert len(variants) == 5
+
+    def test_preserves_domains(self):
+        """REC, HEPN1, and HEPN2 must be identical to baseline in every variant."""
+        variants = _generate_variants_sequence_mutator(
+            self.SEQ, self.COORDS, variant_count=10, bias_json_path=None,
+            generation_num=3, seed=123,
+        )
+        for v in variants:
+            assert len(v) == len(self.SEQ), "Variant length must match baseline"
+            assert v[:40] == self.SEQ[:40], "REC domain modified"
+            assert v[60:80] == self.SEQ[60:80], "HEPN1 domain modified"
+            assert v[90:100] == self.SEQ[90:100], "HEPN2 domain modified"
+
+    def test_mutations_only_in_linkers(self):
+        """All mutations should be in linker1 [40:60) or linker2 [80:90)."""
+        variants = _generate_variants_sequence_mutator(
+            self.SEQ, self.COORDS, variant_count=20, bias_json_path=None,
+            generation_num=5, seed=42,
+        )
+        for v in variants:
+            for i, (orig, new) in enumerate(zip(self.SEQ, v)):
+                if orig != new:
+                    assert (40 <= i < 60) or (80 <= i < 90), \
+                        f"Mutation at position {i} is outside linker regions"
+
+    def test_variants_are_diverse(self):
+        variants = _generate_variants_sequence_mutator(
+            self.SEQ, self.COORDS, variant_count=10, bias_json_path=None,
+            generation_num=1, seed=42,
+        )
+        unique = set(variants)
+        assert len(unique) > 1, "All variants are identical — no diversity"
+
+    def test_bias_influences_mutations(self, tmpdir):
+        bias_file = tmpdir / "bias.json"
+        bias_file.write_text(json.dumps({"46": {"W": 100.0}}))
+        variants = _generate_variants_sequence_mutator(
+            self.SEQ, self.COORDS, variant_count=50, bias_json_path=str(bias_file),
+            generation_num=1, seed=0,
+        )
+        w_count = sum(1 for v in variants if v[45] == "W")
+        assert w_count > 0, "Bias for W at pos 45 had no effect"
+
+    def test_deterministic_with_same_seed(self):
+        v1 = _generate_variants_sequence_mutator(
+            self.SEQ, self.COORDS, variant_count=5, bias_json_path=None,
+            generation_num=1, seed=999,
+        )
+        v2 = _generate_variants_sequence_mutator(
+            self.SEQ, self.COORDS, variant_count=5, bias_json_path=None,
+            generation_num=1, seed=999,
+        )
+        assert v1 == v2
+
+
+class TestPxdesignAvailability:
+    """Test _pxdesign_available detection."""
+
+    def test_returns_bool(self):
+        result = _pxdesign_available()
+        assert isinstance(result, bool)

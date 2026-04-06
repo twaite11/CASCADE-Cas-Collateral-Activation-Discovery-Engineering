@@ -101,7 +101,7 @@ def _get_next_baseline_from_queue(lineage_queue):
 
 
 def _load_validated_baseline_ids():
-    """Load baseline IDs that passed CRISPR repeat validation. Returns None if file missing (use all)."""
+    """Load baseline IDs that passed CRISPR repeat validation. Returns None if file missing or empty (use all)."""
     path = os.path.join(os.path.dirname(__file__), VALIDATED_IDS_FILE)
     if not os.path.isfile(path):
         return None
@@ -111,6 +111,13 @@ def _load_validated_baseline_ids():
             bid = line.strip()
             if bid:
                 ids.add(bid)
+    if not ids:
+        log.warning(
+            "%s is empty or has no IDs — using all baselines from metadata. "
+            "Install ViennaRNA and re-run validation if you need structure-filtered IDs.",
+            VALIDATED_IDS_FILE,
+        )
+        return None
     return ids
 
 # --- Biophysical Thresholds ---
@@ -423,7 +430,7 @@ def main_evolution_loop():
         baseline_ids = [b for b in baseline_ids if b in validated]
         log.info(f"Restricting to {len(baseline_ids)} baselines with validated CRISPR repeats (from {VALIDATED_IDS_FILE})")
     else:
-        log.info(f"Using all {len(baseline_ids)} baselines (no {VALIDATED_IDS_FILE})")
+        log.info(f"Using all {len(baseline_ids)} baselines (not restricting by {VALIDATED_IDS_FILE})")
 
     # Baseline object: (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
     lineage_queue = [
@@ -476,6 +483,8 @@ def main_evolution_loop():
                     metadata_override=metadata_override,
                     baseline_fasta_path=baseline_fasta_path,
                     base_json_dir=BASE_JSON_DIR,
+                    generation_num=generation_counter,
+                    lineage_seed=crrna_lookup_id,
                 )
             except Exception as e:
                 log.error(f"PXDesign failed: {e}. Skipping this generation...")
