@@ -67,9 +67,27 @@ def _sequence_from_structure(structure_path: str, chain_id: str = "A") -> str:
     return "".join(seq)
 
 
+def _is_protein_chain(chain) -> bool:
+    """Detect protein chain by backbone atoms (N, CA, C) or known residue names.
+    Backbone-only CIFs may label all residues as UNK but still have protein backbone atoms."""
+    _PROTEIN_BACKBONE = {"N", "CA", "C"}
+    _RNA_ATOMS = {"O2'", "C2'", "C3'", "C4'", "O4'", "P", "OP1", "OP2"}
+    for res in chain:
+        if res.id[0] != " ":
+            continue
+        resname = res.get_resname().strip().upper()
+        if _AA3_TO_1.get(resname):
+            return True
+        atom_names = {a.get_name().strip() for a in res}
+        if _PROTEIN_BACKBONE.issubset(atom_names) and not _RNA_ATOMS.intersection(atom_names):
+            return True
+    return False
+
+
 def _sequence_from_structure_last_chain(structure_path: str) -> str:
     """Extract sequence from the last protein chain (PXDesign outputs binder as final chain).
-    Skips RNA/ligand-only chains by checking for protein residues."""
+    Detects protein chains by backbone atoms, not just residue names — handles
+    backbone-only CIFs where all residues are UNK."""
     from Bio.PDB import MMCIFParser, PDBParser
     ext = os.path.splitext(structure_path)[1].lower()
     parser = MMCIFParser(QUIET=True) if ext == ".cif" else PDBParser(QUIET=True)
@@ -77,8 +95,7 @@ def _sequence_from_structure_last_chain(structure_path: str) -> str:
 
     protein_chain_id = None
     for chain in struct[0].get_chains():
-        residues = [r for r in chain if r.id[0] == " "]
-        if any(_AA3_TO_1.get(r.get_resname().strip().upper()) for r in residues):
+        if _is_protein_chain(chain):
             protein_chain_id = chain.id
 
     if protein_chain_id is None:
@@ -153,14 +170,7 @@ def _cif_to_enzyme_pdb(cif_path: str, output_pdb: str) -> bool:
     if not chains:
         return False
 
-    protein_chains = []
-    for chain in chains:
-        residues = [r for r in chain if r.id[0] == " "]
-        if not residues:
-            continue
-        has_protein = any(_AA3_TO_1.get(r.get_resname().strip().upper()) for r in residues)
-        if has_protein:
-            protein_chains.append(chain)
+    protein_chains = [c for c in chains if _is_protein_chain(c)]
 
     if not protein_chains:
         log.warning(f"No protein chains found in {cif_path}")
