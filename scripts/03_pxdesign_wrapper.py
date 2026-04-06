@@ -418,7 +418,7 @@ def _run_mpnn_refinement(
         n_unfreeze = max(1, int(len(all_linker) * unfreeze_frac))
 
         # If RL bias is available, prefer unfreezing positions with strong signal
-        unfreeze_weights = np.ones(len(all_linker))
+        unfreeze_weights = np.ones(len(all_linker), dtype=float)
         bias = {}
         if bias_json_path and os.path.exists(bias_json_path):
             try:
@@ -428,10 +428,11 @@ def _run_mpnn_refinement(
                     pos_str = str(pos + 1)
                     if pos_str in bias:
                         max_weight = max(bias[pos_str].values())
-                        unfreeze_weights[idx] = 1.0 + max_weight
+                        unfreeze_weights[idx] = 1.0 + abs(max_weight)
             except Exception:
                 pass
 
+        unfreeze_weights = np.clip(unfreeze_weights, 0.01, None)
         unfreeze_weights /= unfreeze_weights.sum()
         unfreeze_indices = rng.choice(len(all_linker), size=min(n_unfreeze, len(all_linker)),
                                       replace=False, p=unfreeze_weights)
