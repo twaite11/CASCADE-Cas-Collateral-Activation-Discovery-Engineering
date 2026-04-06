@@ -68,11 +68,22 @@ def _sequence_from_structure(structure_path: str, chain_id: str = "A") -> str:
 
 
 def _sequence_from_structure_last_chain(structure_path: str) -> str:
-    """Extract sequence from the last chain (PXDesign outputs binder as final chain)."""
-    chain_ids = _get_structure_chain_ids(structure_path)
-    if not chain_ids:
+    """Extract sequence from the last protein chain (PXDesign outputs binder as final chain).
+    Skips RNA/ligand-only chains by checking for protein residues."""
+    from Bio.PDB import MMCIFParser, PDBParser
+    ext = os.path.splitext(structure_path)[1].lower()
+    parser = MMCIFParser(QUIET=True) if ext == ".cif" else PDBParser(QUIET=True)
+    struct = parser.get_structure("s", structure_path)
+
+    protein_chain_id = None
+    for chain in struct[0].get_chains():
+        residues = [r for r in chain if r.id[0] == " "]
+        if any(_AA3_TO_1.get(r.get_resname().strip().upper()) for r in residues):
+            protein_chain_id = chain.id
+
+    if protein_chain_id is None:
         return ""
-    return _sequence_from_structure(structure_path, chain_ids[-1])
+    return _sequence_from_structure(structure_path, protein_chain_id)
 
 
 def _resolve_unknown_residues(seq: str, baseline_seq: str = "") -> str:
@@ -123,42 +134,115 @@ def _proteinmpnn_available() -> bool:
     return False
 
 
+def _cif_to_enzyme_pdb(cif_path: str, output_pdb: str) -> bool:
+    """
+    Convert a PXDesign CIF to a PDB containing only the enzyme (protein) chain.
+
+    PXDesign CIFs use auth_asym_id like 'A0', 'B0' etc. Biopython's MMCIFParser
+    reads these as chain IDs. ProteinMPNN expects standard single-char PDB chain
+    IDs ('A', 'B'). We also strip non-protein chains (RNA, ligands) since MPNN
+    only designs protein sequences.
+    """
+    from Bio.PDB import MMCIFParser, PDBIO, Select
+
+    parser = MMCIFParser(QUIET=True)
+    struct = parser.get_structure("s", cif_path)
+    model = struct[0]
+
+    chains = list(model.get_chains())
+    if not chains:
+        return False
+
+    protein_chains = []
+    for chain in chains:
+        residues = [r for r in chain if r.id[0] == " "]
+        if not residues:
+            continue
+        has_protein = any(_AA3_TO_1.get(r.get_resname().strip().upper()) for r in residues)
+        if has_protein:
+            protein_chains.append(chain)
+
+    if not protein_chains:
+        log.warning(f"No protein chains found in {cif_path}")
+        return False
+
+    remap = {}
+    next_id = ord("A")
+    for chain in protein_chains:
+        old_id = chain.id
+        new_id = chr(next_id)
+        remap[old_id] = new_id
+        next_id += 1
+        if next_id > ord("Z"):
+            break
+
+    for chain in protein_chains:
+        new_id = remap.get(chain.id)
+        if new_id and new_id != chain.id:
+            chain.id = new_id
+
+    class ProteinOnlySelect(Select):
+        def accept_chain(self, chain):
+            return chain.id in remap.values()
+        def accept_residue(self, residue):
+            return residue.id[0] == " "
+
+    io = PDBIO()
+    io.set_structure(struct)
+    io.save(output_pdb, ProteinOnlySelect())
+
+    chain_info = ", ".join(f"{old}->{new}" for old, new in remap.items())
+    log.info(f"  CIF→PDB: extracted {len(protein_chains)} protein chain(s) [{chain_info}]")
+    return True
+
+
 def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float = 0.1) -> str:
     """
-    Run standalone ProteinMPNN on a backbone-only CIF to design a sequence.
-    Returns the best (lowest-loss) designed sequence, or empty string on failure.
+    Design a sequence for a backbone-only CIF using standalone ProteinMPNN.
+
+    1. Convert CIF → PDB (enzyme-only, normalized chain IDs)
+    2. Run ProteinMPNN's chain parser
+    3. Run ProteinMPNN sequence design
+    4. Return the best designed sequence (binder/last chain)
     """
     mpnn_dir = os.environ.get("PROTEINMPNN_DIR", "/workspace/ProteinMPNN")
     run_script = os.path.join(mpnn_dir, "protein_mpnn_run.py")
 
     import tempfile
     with tempfile.TemporaryDirectory(prefix="mpnn_") as tmp:
-        jsonl_path = os.path.join(tmp, "input.jsonl")
+        # Step 1: CIF → enzyme-only PDB with clean chain IDs
+        pdb_path = os.path.join(tmp, "enzyme.pdb")
+        if not _cif_to_enzyme_pdb(cif_path, pdb_path):
+            log.warning(f"CIF→PDB conversion failed for {cif_path}")
+            return ""
 
-        # ProteinMPNN expects parsed chain data — use its helper to parse the CIF
-        parse_script = os.path.join(mpnn_dir, "helper_scripts", "parse_multiple_chains.py")
-        parsed_dir = os.path.join(tmp, "parsed")
-        os.makedirs(parsed_dir, exist_ok=True)
-
-        # Copy CIF into an input dir ProteinMPNN can glob
+        # Step 2: ProteinMPNN chain parsing
         input_dir = os.path.join(tmp, "pdbs")
         os.makedirs(input_dir, exist_ok=True)
         import shutil
-        shutil.copy2(cif_path, input_dir)
+        shutil.copy2(pdb_path, os.path.join(input_dir, "enzyme.pdb"))
 
-        # Step 1: parse chains
+        jsonl_path = os.path.join(tmp, "parsed_chains.jsonl")
+        parse_script = os.path.join(mpnn_dir, "helper_scripts", "parse_multiple_chains.py")
         parse_cmd = [
             "python", parse_script,
             "--input_path", input_dir,
             "--output_path", jsonl_path,
         ]
         try:
-            subprocess.run(parse_cmd, capture_output=True, text=True, timeout=120, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+            result = subprocess.run(parse_cmd, capture_output=True, text=True, timeout=120, check=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             log.warning(f"ProteinMPNN chain parsing failed: {e}")
             return ""
+        except FileNotFoundError:
+            log.warning(f"ProteinMPNN parse script not found: {parse_script}")
+            return ""
 
-        # Step 2: run ProteinMPNN
+        if not os.path.isfile(jsonl_path) or os.path.getsize(jsonl_path) == 0:
+            log.warning("ProteinMPNN chain parser produced empty output")
+            return ""
+
+        # Step 3: run ProteinMPNN (enzyme-only, no RNA)
         out_dir = os.path.join(tmp, "output")
         os.makedirs(out_dir, exist_ok=True)
         mpnn_cmd = [
@@ -170,27 +254,61 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
             "--batch_size", "1",
         ]
         try:
-            subprocess.run(mpnn_cmd, capture_output=True, text=True, timeout=300, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+            result = subprocess.run(mpnn_cmd, capture_output=True, text=True, timeout=300, check=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             log.warning(f"ProteinMPNN sequence design failed: {e}")
+            if hasattr(e, "stderr") and e.stderr:
+                log.warning(f"  stderr: {e.stderr[-2000:]}")
+            return ""
+        except FileNotFoundError:
+            log.warning(f"ProteinMPNN run script not found: {run_script}")
             return ""
 
-        # Step 3: parse output FASTA
+        # Step 4: parse output — grab the last chain's sequence (binder)
         fa_glob = glob.glob(os.path.join(out_dir, "seqs", "*.fa"))
         if not fa_glob:
             log.warning("ProteinMPNN produced no output FASTA")
             return ""
 
         best_seq = ""
+        best_score = float("inf")
         for fa_path in fa_glob:
             with open(fa_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith(">"):
-                        if not best_seq or len(line) > len(best_seq):
-                            best_seq = line
+                lines = f.readlines()
+            i = 0
+            while i < len(lines):
+                header = lines[i].strip()
+                i += 1
+                seq_lines = []
+                while i < len(lines) and not lines[i].startswith(">"):
+                    seq_lines.append(lines[i].strip())
+                    i += 1
+                raw_seq = "".join(seq_lines)
+                if not raw_seq or header.startswith(">T="):
+                    continue
+                # Multi-chain outputs use '/' as chain separator — take
+                # the last chain (binder) since we only want the designed
+                # protein, not target/scaffold chains.
+                if "/" in raw_seq:
+                    seq = raw_seq.split("/")[-1]
+                else:
+                    seq = raw_seq
+                score = float("inf")
+                for part in header.split(","):
+                    part = part.strip()
+                    if part.startswith("score="):
+                        try:
+                            score = float(part.split("=")[1])
+                        except ValueError:
+                            pass
+                if score < best_score:
+                    best_score = score
+                    best_seq = seq
+
         if best_seq:
-            log.info(f"  ProteinMPNN designed {len(best_seq)}-aa sequence from backbone CIF")
+            log.info(f"  ProteinMPNN designed {len(best_seq)}-aa sequence (score={best_score:.2f})")
+        else:
+            log.warning("ProteinMPNN output FASTA contained no usable sequences")
         return best_seq
 
 
