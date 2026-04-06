@@ -351,6 +351,177 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
         return best_seq
 
 
+def _run_mpnn_refinement(
+    backbone_cif: str,
+    current_seq: str,
+    coords: dict,
+    bias_json_path: str | None,
+    variant_count: int,
+    generation_num: int,
+    temperature: float = 0.1,
+) -> list[str]:
+    """
+    Iterative MPNN refinement: redesign a subset of linker positions on a fixed
+    backbone, keeping HEPN/REC domains and most linker positions frozen.
+
+    Each generation unfreezes more positions (exploration schedule) and applies
+    RL bias weights as PSSM to guide which amino acids are preferred.
+
+    Returns list of designed binder sequences (linker-only, for stitching).
+    """
+    if not _proteinmpnn_available():
+        return []
+
+    mpnn_dir = os.environ.get("PROTEINMPNN_DIR", "/workspace/ProteinMPNN")
+    run_script = os.path.join(mpnn_dir, "protein_mpnn_run.py")
+
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="mpnn_refine_") as tmp:
+        # Convert backbone CIF → PDB with ALA placeholders
+        pdb_path = os.path.join(tmp, "backbone.pdb")
+        if not _cif_to_enzyme_pdb(backbone_cif, pdb_path):
+            log.warning("CIF→PDB conversion failed for refinement")
+            return []
+
+        # Parse chains
+        input_dir = os.path.join(tmp, "pdbs")
+        os.makedirs(input_dir)
+        import shutil
+        shutil.copy2(pdb_path, os.path.join(input_dir, "backbone.pdb"))
+
+        jsonl_path = os.path.join(tmp, "parsed.jsonl")
+        parse_script = os.path.join(mpnn_dir, "helper_scripts", "parse_multiple_chains.py")
+        try:
+            subprocess.run(
+                ["python", parse_script, "--input_path", input_dir, "--output_path", jsonl_path],
+                capture_output=True, text=True, timeout=120, check=True,
+            )
+        except Exception as e:
+            log.warning(f"MPNN chain parsing failed for refinement: {e}")
+            return []
+
+        # Build fixed_positions JSONL: freeze everything except a subset of
+        # linker positions. Unfreeze rate increases with generation.
+        rec_end = coords["rec_end"]
+        hepn1_start = coords["hepn1_start"]
+        hepn1_end = coords["hepn1_end"]
+        hepn2_start = coords["hepn2_start"]
+
+        linker1_pos = list(range(rec_end, hepn1_start))
+        linker2_pos = list(range(hepn1_end, hepn2_start))
+        all_linker = linker1_pos + linker2_pos
+
+        # Exploration schedule: unfreeze 10-50% of linker positions per gen
+        import numpy as np
+        rng = np.random.default_rng(generation_num * 7919)
+        unfreeze_frac = min(0.10 + 0.05 * generation_num, 0.50)
+        n_unfreeze = max(1, int(len(all_linker) * unfreeze_frac))
+
+        # If RL bias is available, prefer unfreezing positions with strong signal
+        unfreeze_weights = np.ones(len(all_linker))
+        bias = {}
+        if bias_json_path and os.path.exists(bias_json_path):
+            try:
+                with open(bias_json_path) as f:
+                    bias = json.load(f)
+                for idx, pos in enumerate(all_linker):
+                    pos_str = str(pos + 1)
+                    if pos_str in bias:
+                        max_weight = max(bias[pos_str].values())
+                        unfreeze_weights[idx] = 1.0 + max_weight
+            except Exception:
+                pass
+
+        unfreeze_weights /= unfreeze_weights.sum()
+        unfreeze_indices = rng.choice(len(all_linker), size=min(n_unfreeze, len(all_linker)),
+                                      replace=False, p=unfreeze_weights)
+        designable_positions = {all_linker[i] for i in unfreeze_indices}
+
+        # MPNN uses 1-based positions in the chain. Chain B is the binder.
+        # Fixed = all positions NOT in designable set (1-based).
+        total_binder_len = coords.get("seq_len", hepn2_start + 50) - rec_end
+        fixed_in_B = [str(p - rec_end + 1) for p in range(rec_end, rec_end + total_binder_len)
+                      if p not in designable_positions]
+        # Chain A (target crop) is always fixed
+        fixed_positions = {"backbone": {"A": ["1"], "B": fixed_in_B}}
+        fixed_pos_path = os.path.join(tmp, "fixed_positions.jsonl")
+        with open(fixed_pos_path, "w") as f:
+            f.write(json.dumps(fixed_positions) + "\n")
+
+        log.info(f"  [MPNN refine] gen={generation_num}: unfreezing {len(designable_positions)}/{len(all_linker)} "
+                 f"linker positions ({unfreeze_frac:.0%}), {len(bias)} RL bias entries")
+
+        # Build PSSM from RL bias (if available)
+        pssm_path = None
+        if bias:
+            _AA_ORDER = "ACDEFGHIKLMNPQRSTVWY"
+            pssm_dict = {}
+            for pos in designable_positions:
+                pos_str = str(pos + 1)
+                if pos_str in bias:
+                    row = [bias[pos_str].get(aa, 0.0) for aa in _AA_ORDER]
+                else:
+                    row = [0.0] * len(_AA_ORDER)
+                pssm_dict[str(pos - rec_end + 1)] = row
+            if pssm_dict:
+                pssm_data = {"backbone": {"B": pssm_dict}}
+                pssm_path = os.path.join(tmp, "pssm.jsonl")
+                with open(pssm_path, "w") as f:
+                    f.write(json.dumps(pssm_data) + "\n")
+                log.info(f"  [MPNN refine] PSSM bias applied to {len(pssm_dict)} positions")
+
+        # Run MPNN with fixed positions + PSSM
+        out_dir = os.path.join(tmp, "output")
+        os.makedirs(out_dir)
+        mpnn_cmd = [
+            "python", run_script,
+            "--jsonl_path", jsonl_path,
+            "--out_folder", out_dir,
+            "--num_seq_per_target", str(variant_count),
+            "--sampling_temp", str(temperature),
+            "--batch_size", "1",
+            "--fixed_positions_jsonl", fixed_pos_path,
+        ]
+        if pssm_path:
+            mpnn_cmd.extend(["--pssm_jsonl", pssm_path, "--pssm_multi", "0.5"])
+
+        try:
+            subprocess.run(mpnn_cmd, capture_output=True, text=True, timeout=300, check=True)
+        except Exception as e:
+            log.warning(f"MPNN refinement failed: {e}")
+            return []
+
+        # Parse output FASTAs — same logic as _run_proteinmpnn_on_cif
+        fa_glob = glob.glob(os.path.join(out_dir, "seqs", "*.fa"))
+        if not fa_glob:
+            return []
+
+        designed_seqs = []
+        for fa_path in fa_glob:
+            with open(fa_path) as f:
+                lines = f.readlines()
+            record_idx = 0
+            i = 0
+            while i < len(lines):
+                header = lines[i].strip()
+                i += 1
+                seq_lines = []
+                while i < len(lines) and not lines[i].startswith(">"):
+                    seq_lines.append(lines[i].strip())
+                    i += 1
+                raw_seq = "".join(seq_lines)
+                record_idx += 1
+                if not raw_seq or record_idx == 1:
+                    continue
+                seq = raw_seq.split("/")[-1] if "/" in raw_seq else raw_seq
+                if seq.count("X") / max(len(seq), 1) > 0.5:
+                    continue
+                designed_seqs.append(seq)
+
+        log.info(f"  [MPNN refine] Generated {len(designed_seqs)} refined sequences")
+        return designed_seqs[:variant_count]
+
+
 def _apply_bias_to_sequence(full_seq: str, bias_json_path: str, coords: dict) -> str:
     """
     Apply RL bias matrix to the designed full sequence.
@@ -543,32 +714,90 @@ def run_pxdesign_generation(
             f.write(f">{name}\n{variant_full_seq}\n")
         return fasta_path
 
-    # ── PXDesign is required — no fallback ──
-    if not _pxdesign_available():
-        raise RuntimeError(
-            "PXDesign CLI not found. Install PXDesign (bash install.sh --env pxdesign) "
-            "and set PXDESIGN_CMD to the binary path. See setup_dual_env.sh."
+    # ── Generation strategy: PXDesign for gen 1 backbone, MPNN refinement for gen 2+ ──
+    backbone_cache_dir = os.path.join(os.path.dirname(abs_out), "backbone_cache")
+    os.makedirs(backbone_cache_dir, exist_ok=True)
+    backbone_cif_cache = os.path.join(backbone_cache_dir, f"{name_seed}_backbone.cif")
+
+    if generation_num <= 1 or not os.path.isfile(backbone_cif_cache):
+        # Gen 1: run PXDesign to generate novel backbone geometry
+        if not _pxdesign_available():
+            raise RuntimeError(
+                "PXDesign CLI not found. Install PXDesign (bash install.sh --env pxdesign) "
+                "and set PXDESIGN_CMD to the binary path. See setup_dual_env.sh."
+            )
+
+        succeeded = _run_pxdesign_cli(
+            baseline_structure, variant_id, coords, output_dir, variant_count, bias_json_path,
+        )
+        if not succeeded:
+            raise RuntimeError(
+                "PXDesign exited with non-zero status. Check logs above for stderr. "
+                "Common fix: pip install deepspeed==0.14.5 in the pxdesign env."
+            )
+
+        fastas = _parse_pxdesign_outputs(
+            abs_out, variant_count, full_seq, coords, bias_json_path,
+            output_dir, name_seed, generation_num,
+        )
+        if not fastas:
+            raise RuntimeError(
+                f"PXDesign ran successfully but produced no usable variants under {abs_out}. "
+                "Check design_outputs/*/summary.csv or predictions/*.cif."
+            )
+
+        # Cache the best backbone CIF for future refinement generations
+        pred_cifs = glob.glob(os.path.join(abs_out, "**", "predictions", "*.cif"), recursive=True)
+        if pred_cifs:
+            import shutil
+            shutil.copy2(pred_cifs[0], backbone_cif_cache)
+            log.info(f"  Cached backbone CIF for future MPNN refinement: {backbone_cif_cache}")
+
+        return fastas
+    else:
+        # Gen 2+: MPNN refinement on the cached PXDesign backbone
+        log.info(f"  [Gen {generation_num}] MPNN iterative refinement on cached backbone")
+        refined_seqs = _run_mpnn_refinement(
+            backbone_cif=backbone_cif_cache,
+            current_seq=full_seq,
+            coords=coords,
+            bias_json_path=bias_json_path,
+            variant_count=variant_count,
+            generation_num=generation_num,
         )
 
-    succeeded = _run_pxdesign_cli(
-        baseline_structure, variant_id, coords, output_dir, variant_count, bias_json_path,
-    )
-    if not succeeded:
-        raise RuntimeError(
-            "PXDesign exited with non-zero status. Check logs above for stderr. "
-            "Common fix: pip install deepspeed==0.14.5 in the pxdesign env."
-        )
+        if not refined_seqs:
+            log.warning("MPNN refinement produced no sequences; falling back to PXDesign")
+            succeeded = _run_pxdesign_cli(
+                baseline_structure, variant_id, coords, output_dir, variant_count, bias_json_path,
+            )
+            if succeeded:
+                return _parse_pxdesign_outputs(
+                    abs_out, variant_count, full_seq, coords, bias_json_path,
+                    output_dir, name_seed, generation_num,
+                )
+            raise RuntimeError("Both MPNN refinement and PXDesign failed.")
 
-    fastas = _parse_pxdesign_outputs(
-        abs_out, variant_count, full_seq, coords, bias_json_path,
-        output_dir, name_seed, generation_num,
-    )
-    if not fastas:
-        raise RuntimeError(
-            f"PXDesign ran successfully but produced no usable variants under {abs_out}. "
-            "Check design_outputs/*/summary.csv or predictions/*.cif."
-        )
-    return fastas
+        from utils.hepn_structural_stitch import stitch_hepn_into_binder
+        fastas = []
+        for i, binder_seq in enumerate(refined_seqs):
+            binder_seq = _resolve_unknown_residues(binder_seq, full_seq[coords["rec_end"]:])
+            full = stitch_hepn_into_binder(binder_seq, full_seq, coords)
+            if not full:
+                continue
+            full = _resolve_unknown_residues(full, full_seq)
+            full = _apply_bias_to_sequence(full, bias_json_path, coords)
+            name = _compact_variant_name(name_seed, max(1, int(generation_num)), i)
+            fasta_path = os.path.join(output_dir, f"{name}.fasta")
+            with open(fasta_path, "w") as f:
+                f.write(f">{name}\n{full}\n")
+            fastas.append(fasta_path)
+
+        if not fastas:
+            raise RuntimeError("MPNN refinement produced sequences but stitching failed for all.")
+
+        log.info(f"  [MPNN refine] Wrote {len(fastas)} variant FASTA(s)")
+        return fastas
 
 
 def _run_pxdesign_cli(
