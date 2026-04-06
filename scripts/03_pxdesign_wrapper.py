@@ -110,6 +110,90 @@ def _pxdesign_available() -> bool:
     return shutil.which(exe) is not None
 
 
+def _proteinmpnn_available() -> bool:
+    """Check if standalone ProteinMPNN repo is available on this system."""
+    mpnn_dir = os.environ.get("PROTEINMPNN_DIR", "")
+    if mpnn_dir and os.path.isdir(mpnn_dir):
+        return os.path.isfile(os.path.join(mpnn_dir, "protein_mpnn_run.py"))
+    for candidate in ["/workspace/ProteinMPNN", "/opt/ProteinMPNN",
+                      os.path.expanduser("~/ProteinMPNN")]:
+        if os.path.isfile(os.path.join(candidate, "protein_mpnn_run.py")):
+            os.environ["PROTEINMPNN_DIR"] = candidate
+            return True
+    return False
+
+
+def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float = 0.1) -> str:
+    """
+    Run standalone ProteinMPNN on a backbone-only CIF to design a sequence.
+    Returns the best (lowest-loss) designed sequence, or empty string on failure.
+    """
+    mpnn_dir = os.environ.get("PROTEINMPNN_DIR", "/workspace/ProteinMPNN")
+    run_script = os.path.join(mpnn_dir, "protein_mpnn_run.py")
+
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="mpnn_") as tmp:
+        jsonl_path = os.path.join(tmp, "input.jsonl")
+
+        # ProteinMPNN expects parsed chain data — use its helper to parse the CIF
+        parse_script = os.path.join(mpnn_dir, "helper_scripts", "parse_multiple_chains.py")
+        parsed_dir = os.path.join(tmp, "parsed")
+        os.makedirs(parsed_dir, exist_ok=True)
+
+        # Copy CIF into an input dir ProteinMPNN can glob
+        input_dir = os.path.join(tmp, "pdbs")
+        os.makedirs(input_dir, exist_ok=True)
+        import shutil
+        shutil.copy2(cif_path, input_dir)
+
+        # Step 1: parse chains
+        parse_cmd = [
+            "python", parse_script,
+            "--input_path", input_dir,
+            "--output_path", jsonl_path,
+        ]
+        try:
+            subprocess.run(parse_cmd, capture_output=True, text=True, timeout=120, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+            log.warning(f"ProteinMPNN chain parsing failed: {e}")
+            return ""
+
+        # Step 2: run ProteinMPNN
+        out_dir = os.path.join(tmp, "output")
+        os.makedirs(out_dir, exist_ok=True)
+        mpnn_cmd = [
+            "python", run_script,
+            "--jsonl_path", jsonl_path,
+            "--out_folder", out_dir,
+            "--num_seq_per_target", str(num_seqs),
+            "--sampling_temp", str(temperature),
+            "--batch_size", "1",
+        ]
+        try:
+            subprocess.run(mpnn_cmd, capture_output=True, text=True, timeout=300, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+            log.warning(f"ProteinMPNN sequence design failed: {e}")
+            return ""
+
+        # Step 3: parse output FASTA
+        fa_glob = glob.glob(os.path.join(out_dir, "seqs", "*.fa"))
+        if not fa_glob:
+            log.warning("ProteinMPNN produced no output FASTA")
+            return ""
+
+        best_seq = ""
+        for fa_path in fa_glob:
+            with open(fa_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith(">"):
+                        if not best_seq or len(line) > len(best_seq):
+                            best_seq = line
+        if best_seq:
+            log.info(f"  ProteinMPNN designed {len(best_seq)}-aa sequence from backbone CIF")
+        return best_seq
+
+
 def _apply_bias_to_sequence(full_seq: str, bias_json_path: str, coords: dict) -> str:
     """
     Apply RL bias matrix to the designed full sequence.
@@ -440,6 +524,8 @@ def _parse_pxdesign_outputs(
         pred_glob = glob.glob(os.path.join(abs_out, "**", "predictions", "*.cif"), recursive=True)
         if not pred_glob:
             return []
+
+        mpnn_available = _proteinmpnn_available()
         fastas = []
         for i, cif_path in enumerate(pred_glob[:variant_count]):
             try:
@@ -448,11 +534,17 @@ def _parse_pxdesign_outputs(
                     continue
                 x_frac = binder_seq.count("X") / len(binder_seq)
                 if x_frac > 0.5:
-                    log.error(
-                        f"CIF {cif_path}: {x_frac:.0%} of binder residues are unknown (X). "
-                        "Backbone-only outputs have no sequence identity."
-                    )
-                    continue
+                    if mpnn_available:
+                        log.info(f"CIF {cif_path}: backbone-only ({x_frac:.0%} X) — running ProteinMPNN for sequence design")
+                        binder_seq = _run_proteinmpnn_on_cif(cif_path)
+                        if not binder_seq:
+                            log.warning(f"ProteinMPNN failed on {cif_path}; resolving from baseline")
+                            binder_seq = _sequence_from_structure_last_chain(cif_path)
+                    else:
+                        log.info(
+                            f"CIF {cif_path}: backbone-only ({x_frac:.0%} X). "
+                            "Resolving from baseline (install ProteinMPNN for better sequence design)."
+                        )
                 path = _write_stitched_variant(i, binder_seq)
                 if path:
                     fastas.append(path)
