@@ -3,9 +3,44 @@ import json
 import subprocess
 import glob
 import random
+import shutil
 import logging
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Eval engine detection: cattle-prod (Rust) preferred, protenix (Python) fallback
+# ---------------------------------------------------------------------------
+# Set EVAL_CMD to override auto-detection (e.g. EVAL_CMD=protenix or EVAL_CMD=/path/to/cattle-prod)
+_EVAL_CMD_OVERRIDE = os.environ.get("EVAL_CMD", "").strip()
+
+def _detect_eval_engine():
+    """Detect the best available structure prediction engine.
+    Returns (binary, engine_name) where engine_name is 'cattle-prod' or 'protenix'."""
+    if _EVAL_CMD_OVERRIDE:
+        name = "cattle-prod" if "cattle-prod" in _EVAL_CMD_OVERRIDE else "protenix"
+        return _EVAL_CMD_OVERRIDE, name
+
+    cp_bin = shutil.which("cattle-prod")
+    if not cp_bin:
+        for candidate in [
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "model_rustprot", "cattle-prod", "target", "release", "cattle-prod"),
+            os.path.join(os.path.dirname(__file__), "..", "rust", "cattle-prod", "target", "release", "cattle-prod"),
+        ]:
+            if os.name == "nt":
+                candidate += ".exe"
+            if os.path.isfile(candidate):
+                cp_bin = os.path.abspath(candidate)
+                break
+
+    if cp_bin:
+        return cp_bin, "cattle-prod"
+
+    return "protenix", "protenix"
+
+EVAL_BIN, EVAL_ENGINE = _detect_eval_engine()
+log.info(f"CASCADE eval engine: {EVAL_ENGINE} ({EVAL_BIN})")
+_CATTLE_PROD_STRICT = os.environ.get("CATTLE_PROD_STRICT", "1").strip().lower() not in {"0", "false", "no"}
 
 # RNA Constants (Must match what we defined in 01_parse_and_annotate.py)
 DUMMY_SPACER_RNA = "GUCGACUGACGUACGUACGUACGU"
@@ -162,101 +197,10 @@ def _find_cached_outputs(pred_dir):
     return None, None
 
 
-def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path=None):
-    """
-    Executes the Protenix CLI. Logs when starting long-running inference.
-    model_tier="mini" for Script 4 (Fast Filter)
-    model_tier="base" for Script 5 (High Fidelity Oracle)
-    seqres_db_path: if set and path exists, runs protenix msa first for better MSA quality.
-    Caches results: skips inference when structure + summary already exist.
-    """
-    os.makedirs(out_dir, exist_ok=True)
-    base_name = os.path.basename(json_path).replace(".json", "")
-    tier_label = "mini" if model_tier == "mini" else "base"
-
-    pred_dir = os.path.join(out_dir, base_name)
-    cached_struct, cached_summary = _find_cached_outputs(pred_dir)
-    if cached_struct and cached_summary:
-        log.info(f"Reusing cached Protenix {tier_label} output for {base_name}")
-        return cached_struct, cached_summary
-
-    log.info(f"Starting Protenix {tier_label} inference for {base_name} (this may take several minutes)...")
-    predict_input = json_path
-    use_msa = False
-
-    # Optional: run protenix msa first (improves prediction quality)
-    msa_dir = os.path.join(out_dir, f"{base_name}_msa")
-    os.makedirs(msa_dir, exist_ok=True)
-    # Protenix msa writes updated JSON to <input_dir>/<name>-update-msa.json
-    json_dir = os.path.dirname(os.path.abspath(json_path))
-    msa_output_primary = os.path.join(json_dir, f"{base_name}-update-msa.json")
-    msa_output_fallback = os.path.join(msa_dir, os.path.basename(json_path))
-
-    for msa_candidate in [msa_output_primary, msa_output_fallback]:
-        if os.path.exists(msa_candidate):
-            predict_input = msa_candidate
-            use_msa = True
-            log.info(f"  Reusing cached MSA output for {base_name}")
-            break
-    else:
-        try:
-            msa_cmd = ["protenix", "msa", "--input", json_path, "--out_dir", msa_dir]
-            if seqres_db_path and os.path.isdir(seqres_db_path):
-                msa_cmd.extend(["--db_dir", seqres_db_path])
-            subprocess.run(msa_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            for msa_candidate in [msa_output_primary, msa_output_fallback]:
-                if os.path.exists(msa_candidate):
-                    predict_input = msa_candidate
-                    use_msa = True
-                    break
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass  # Fall back to raw JSON without MSA
-
-    if model_tier == "mini":
-        model_name = "protenix_mini_default_v0.5.0"
-    else:
-        # Base tier: prefer v1.0.0; fall back to v0.5.0 if not supported (older Protenix installs)
-        model_name = os.environ.get("PROTENIX_BASE_MODEL", "protenix_base_default_v1.0.0")
-        base_fallback = "protenix_base_default_v0.5.0"
-
-    # Protenix CLI: 1.0 uses "pred", older versions use "predict". Try pred first.
-    pred_subcmd = "pred"
-    cmd = [
-        "protenix", pred_subcmd,
-        "-i", predict_input,
-        "-o", out_dir,
-        "-n", model_name,
-        "--use_msa", str(use_msa).lower(),
-        "--use_default_params", "true",
-    ]
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0 and "No such command" in (result.stderr or ""):
-            # Fallback for older Protenix (predict + long flags)
-            pred_subcmd = "predict"
-            cmd = [
-                "protenix", pred_subcmd,
-                "--input", predict_input,
-                "--out_dir", out_dir,
-                "--model_name", model_name,
-                "--use_msa", str(use_msa).lower(),
-                "--use_default_params", "true",
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0 and model_tier == "base":
-            if "not supported for inference" in (result.stderr or ""):
-                log.warning(f"Base model {model_name} not supported; falling back to {base_fallback}")
-                cmd = [base_fallback if c == model_name else c for c in cmd]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
-    except subprocess.CalledProcessError as e:
-        print(f"Protenix Evaluation Failed for {base_name}:\n{e.stderr}")
-        raise
-
-    # Locate outputs (Protenix outputs .cif; we prefer CIF, fallback to .pdb)
-    pred_dir = os.path.join(out_dir, base_name)
+def _find_structure_and_summary(pred_dir):
+    """Locate structure (CIF/PDB) and summary JSON under a prediction directory."""
+    if not os.path.isdir(pred_dir):
+        return None, None
     structure_files = glob.glob(os.path.join(pred_dir, "**/*.cif"), recursive=True)
     if not structure_files:
         structure_files = glob.glob(os.path.join(pred_dir, "*.cif"))
@@ -264,11 +208,218 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
         structure_files = glob.glob(os.path.join(pred_dir, "**/*.pdb"), recursive=True)
     if not structure_files:
         structure_files = glob.glob(os.path.join(pred_dir, "*.pdb"))
-    summary_files = glob.glob(os.path.join(pred_dir, "*_summary*.json"))
+    summary_files = glob.glob(os.path.join(pred_dir, "**/*_summary*.json"), recursive=True)
     if not summary_files:
-        summary_files = glob.glob(os.path.join(pred_dir, "**/*_summary*.json"), recursive=True)
+        summary_files = glob.glob(os.path.join(pred_dir, "*_summary*.json"))
+    if not summary_files:
+        summary_files = glob.glob(os.path.join(pred_dir, "**/*_confidence*.json"), recursive=True)
+    if structure_files and summary_files:
+        return structure_files[0], summary_files[0]
+    return None, None
 
-    if not structure_files or not summary_files:
-        raise FileNotFoundError(f"Protenix outputs not generated for {base_name}")
 
-    return structure_files[0], summary_files[0]
+def _model_name_for_tier(model_tier, engine):
+    """Return the model name string for the given tier and engine."""
+    if model_tier == "mini":
+        if engine == "cattle-prod":
+            return "cattle_prod_mini_default_v0.5.0"
+        return "protenix_mini_default_v0.5.0"
+    if engine == "cattle-prod":
+        return os.environ.get("CATTLE_PROD_BASE_MODEL", "cattle_prod_base_default_v1.0.0")
+    return os.environ.get("PROTENIX_BASE_MODEL", "protenix_base_default_v1.0.0")
+
+
+def _resolve_cattle_prod_checkpoint(model_tier):
+    """
+    Resolve checkpoint directory for cattle-prod and fail loudly if missing.
+    Expected env vars:
+      - CATTLE_PROD_MINI_CKPT
+      - CATTLE_PROD_BASE_CKPT
+    """
+    env_name = "CATTLE_PROD_MINI_CKPT" if model_tier == "mini" else "CATTLE_PROD_BASE_CKPT"
+    ckpt = os.environ.get(env_name, "").strip()
+    if not ckpt:
+        raise RuntimeError(
+            f"{env_name} is required for cattle-prod inference to avoid silent featurize-only mode. "
+            f"Set {env_name} to a directory containing model.safetensors."
+        )
+    if not os.path.isdir(ckpt):
+        raise RuntimeError(f"{env_name} path is not a directory: {ckpt}")
+    st_path = os.path.join(ckpt, "model.safetensors")
+    if not os.path.isfile(st_path):
+        raise RuntimeError(f"{env_name} missing model.safetensors: {st_path}")
+    return ckpt
+
+
+def _summary_looks_uninitialized(summary_json_path):
+    """
+    Detect common silent-featurize signature in confidence summary.
+    """
+    if not summary_json_path or not os.path.isfile(summary_json_path):
+        return False
+    try:
+        with open(summary_json_path, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return False
+    iptm = float(data.get("iptm", 0.0) or 0.0)
+    ptm = float(data.get("ptm", 0.0) or 0.0)
+    af2_ig = float(data.get("af2_ig", data.get("af2_ig_score", 0.0)) or 0.0)
+    ranking = float(data.get("ranking_score", 0.0) or 0.0)
+    return iptm == 0.0 and ptm == 0.0 and af2_ig == 0.0 and ranking == 0.0
+
+
+def _run_pred_command(cmd, engine, base_name, model_tier, base_fallback=None):
+    """
+    Execute prediction command with engine-specific fallbacks.
+    """
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0 and engine == "protenix" and "No such command" in (result.stderr or ""):
+        cmd = [
+            cmd[0], "predict",
+            "--input", cmd[3],  # predict_input
+            "--out_dir", cmd[5],  # out_dir
+            "--model_name", cmd[7],  # model_name
+            "--use_msa", "true",
+            "--use_default_params", "true",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0 and model_tier == "base" and base_fallback:
+        if "not supported" in (result.stderr or ""):
+            log.warning(f"Base model {cmd[7]} not supported; falling back to {base_fallback}")
+            cmd = [base_fallback if c == cmd[7] else c for c in cmd]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+    return cmd
+
+
+def _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin):
+    """Run MSA search step. Returns predict_input_path.
+
+    Always enables MSA for maximum prediction robustness.  The MSA
+    enrichment step is attempted (it may add alignment data to the
+    JSON); if it fails the original input is used but use_msa remains
+    True so the model still activates its MSA pathway.
+    """
+    msa_dir = os.path.join(out_dir, f"{base_name}_msa")
+    os.makedirs(msa_dir, exist_ok=True)
+    json_dir = os.path.dirname(os.path.abspath(json_path))
+    msa_output_primary = os.path.join(json_dir, f"{base_name}-update-msa.json")
+    msa_output_fallback = os.path.join(msa_dir, os.path.basename(json_path))
+
+    for msa_candidate in [msa_output_primary, msa_output_fallback]:
+        if os.path.exists(msa_candidate):
+            log.info(f"  Reusing cached MSA output for {base_name}")
+            return msa_candidate
+
+    try:
+        msa_cmd = [engine_bin, "msa", "--input", json_path, "--out_dir", msa_dir]
+        if seqres_db_path and os.path.isdir(seqres_db_path):
+            msa_cmd.extend(["--db_dir", seqres_db_path])
+        subprocess.run(msa_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for msa_candidate in [msa_output_primary, msa_output_fallback]:
+            if os.path.exists(msa_candidate):
+                return msa_candidate
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        log.debug(f"  MSA enrichment unavailable for {base_name}; proceeding with use_msa=true on raw input")
+    return json_path
+
+
+def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path=None):
+    """
+    Executes the structure prediction engine (cattle-prod or protenix).
+    Uses EVAL_CMD env var or auto-detects cattle-prod on PATH.
+    model_tier="mini" for Script 4 (Fast Filter)
+    model_tier="base" for Script 5 (High Fidelity Oracle)
+    seqres_db_path: if set and path exists, runs MSA first for better quality.
+    Caches results: skips inference when structure + summary already exist.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    base_name = os.path.basename(json_path).replace(".json", "")
+    tier_label = "mini" if model_tier == "mini" else "base"
+    engine_bin, engine = EVAL_BIN, EVAL_ENGINE
+
+    pred_dir = os.path.join(out_dir, base_name)
+    cached_struct, cached_summary = _find_cached_outputs(pred_dir)
+    if cached_struct and cached_summary:
+        log.info(f"Reusing cached {engine} {tier_label} output for {base_name}")
+        return cached_struct, cached_summary
+
+    log.info(f"Starting {engine} {tier_label} inference for {base_name} (this may take several minutes)...")
+    log.info(f"  eval_decision: engine={engine} strict_mode={_CATTLE_PROD_STRICT}")
+
+    predict_input = _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin)
+
+    model_name = _model_name_for_tier(model_tier, engine)
+    checkpoint_dir = None
+    if engine == "cattle-prod":
+        checkpoint_dir = _resolve_cattle_prod_checkpoint(model_tier)
+    base_fallback = None
+    if model_tier == "base":
+        if engine == "cattle-prod":
+            base_fallback = "cattle_prod_base_default_v0.5.0"
+        else:
+            base_fallback = "protenix_base_default_v0.5.0"
+
+    cmd = [
+        engine_bin, "pred",
+        "-i", predict_input,
+        "-o", out_dir,
+        "-n", model_name,
+        "--use_msa", "true",
+        "--use_default_params", "true",
+    ]
+    if checkpoint_dir:
+        cmd.extend(["--checkpoint", checkpoint_dir])
+
+    try:
+        _run_pred_command(cmd, engine, base_name, model_tier, base_fallback=base_fallback)
+    except subprocess.CalledProcessError as e:
+        if engine == "cattle-prod" and not _CATTLE_PROD_STRICT:
+            fallback_bin = shutil.which("protenix")
+            if fallback_bin:
+                log.warning(
+                    f"cattle-prod failed for {base_name}, strict mode disabled; "
+                    f"falling back to protenix ({fallback_bin})"
+                )
+                fallback_model = _model_name_for_tier(model_tier, "protenix")
+                fb_base_fallback = "protenix_base_default_v0.5.0" if model_tier == "base" else None
+                fallback_cmd = [
+                    fallback_bin, "pred",
+                    "-i", predict_input,
+                    "-o", out_dir,
+                    "-n", fallback_model,
+                    "--use_msa", "true",
+                    "--use_default_params", "true",
+                ]
+                _run_pred_command(
+                    fallback_cmd,
+                    "protenix",
+                    base_name,
+                    model_tier,
+                    base_fallback=fb_base_fallback,
+                )
+                engine = "protenix-fallback"
+            else:
+                print(f"{engine} evaluation failed for {base_name}:\n{e.stderr}")
+                raise
+        else:
+            print(f"{engine} evaluation failed for {base_name}:\n{e.stderr}")
+            raise
+
+    struct_path, summary_path = _find_structure_and_summary(pred_dir)
+    if not struct_path or not summary_path:
+        raise FileNotFoundError(f"{engine} outputs not generated for {base_name}")
+    if engine == "cattle-prod" and _summary_looks_uninitialized(summary_path):
+        raise RuntimeError(
+            f"cattle-prod produced zeroed confidence metrics for {base_name}; "
+            f"this usually indicates missing/invalid checkpoint. "
+            f"mini_ckpt={os.environ.get('CATTLE_PROD_MINI_CKPT','')} "
+            f"base_ckpt={os.environ.get('CATTLE_PROD_BASE_CKPT','')}"
+        )
+
+    return struct_path, summary_path

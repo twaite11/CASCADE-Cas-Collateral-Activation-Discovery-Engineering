@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CASCADE Dashboard</title>
+  <link rel="stylesheet" href="/dashboard/styles.css" />
+  <script src="https://3Dmol.org/build/3Dmol-min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>CASCADE Pipeline Dashboard</h1>
+    <div class="controls">
+      <label>
+        Auto refresh (sec):
+        <input id="refreshSeconds" type="number" min="5" max="120" step="5" value="10" />
+      </label>
+      <button id="refreshNow">Refresh now</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Filters</h2>
+      <div class="controls">
+        <label>
+          Search variant:
+          <input id="variantSearch" type="text" placeholder="variant id..." />
+        </label>
+        <label>
+          Generation:
+          <input id="generationFilter" type="number" min="1" step="1" placeholder="all" />
+        </label>
+        <label>
+          Lineage:
+          <input id="lineageFilter" type="text" placeholder="baseline id..." />
+        </label>
+        <label>
+          <input id="optimizedOnly" type="checkbox" />
+          Optimized only
+        </label>
+        <label>
+          <input id="eliteOnly" type="checkbox" />
+          Elite only
+        </label>
+        <label>
+          Min fitness:
+          <input id="minFitness" type="number" step="0.1" placeholder="none" />
+        </label>
+        <label>
+          Min ipTM:
+          <input id="minIptm" type="number" step="0.001" placeholder="none" />
+        </label>
+        <label>
+          Min AF2-IG:
+          <input id="minAf2ig" type="number" step="0.001" placeholder="none" />
+        </label>
+        <button id="applyFilters">Apply</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Overview</h2>
+      <div id="overviewGrid" class="grid"></div>
+    </section>
+
+    <section class="card">
+      <h2>Pipeline Health</h2>
+      <div id="healthGrid" class="grid"></div>
+    </section>
+
+    <section class="card">
+      <h2>Production</h2>
+      <div id="productionGrid" class="grid"></div>
+      <table id="lineageTable">
+        <thead>
+          <tr>
+            <th>Lineage</th>
+            <th>Generated</th>
+            <th>Optimized</th>
+            <th>Elite</th>
+            <th>Optimized Yield</th>
+            <th>Elite Yield</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Optimized Switches</h2>
+      <div id="optimizedCards" class="cards"></div>
+      <table id="optimizedTable">
+        <thead>
+          <tr>
+            <th>Variant</th>
+            <th>Generation</th>
+            <th>Fitness</th>
+            <th>ipTM</th>
+            <th>AF2-IG</th>
+            <th>ON Dist (A)</th>
+            <th>Reasons</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>All Variants</h2>
+      <table id="variantsTable">
+        <thead>
+          <tr>
+            <th>Variant</th>
+            <th>Generation</th>
+            <th>Baseline</th>
+            <th>Fitness</th>
+            <th>OFF Dist (A)</th>
+            <th>ON Dist (A)</th>
+            <th>ipTM</th>
+            <th>AF2-IG</th>
+            <th>Optimized</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Variant Detail</h2>
+      <div id="detailPanel" class="detail">
+        <div class="muted">Click a variant row to inspect metadata, lineage, and artifacts.</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>3D Structure Viewer</h2>
+      <div class="controls">
+        <label>
+          Variant:
+          <input id="viewerVariant" type="text" placeholder="variant id from table click" />
+        </label>
+        <label>
+          Structure:
+          <select id="structureSelect"></select>
+        </label>
+        <button id="loadStructure">Load structure</button>
+      </div>
+      <div class="viewerWrap">
+        <div>
+          <h3>Primary</h3>
+          <div id="molViewerPrimary" class="viewer"></div>
+        </div>
+        <div>
+          <h3>Compare (optional)</h3>
+          <div class="controls">
+            <label>
+              Compare variant:
+              <input id="compareVariant" type="text" placeholder="second variant id" />
+            </label>
+            <button id="loadCompare">Load compare</button>
+          </div>
+          <div id="molViewerCompare" class="viewer"></div>
+        </div>
+      </div>
+      <div class="muted">Domain coloring: HEPN1=orange, HEPN2=cyan, other residues=light gray.</div>
+    </section>
+  </main>
+
+  <script src="/dashboard/app.js"></script>
+</body>
+</html>

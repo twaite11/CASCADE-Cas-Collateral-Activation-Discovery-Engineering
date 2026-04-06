@@ -156,7 +156,54 @@ if [ "$SETUP_PXDESIGN" = true ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Create output directories
+# 3. Detect / build cattle-prod (Rust eval engine — optional, faster than Protenix)
+# ---------------------------------------------------------------------------
+log_ts ""
+log_ts "${GREEN}=== Checking for cattle-prod (Rust eval engine) ===${NC}"
+
+_CP_BIN="$(command -v cattle-prod 2>/dev/null || echo "")"
+if [ -z "$_CP_BIN" ]; then
+    # Check for a pre-built binary next to the repo
+    for _CP_CANDIDATE in \
+        "$PROJECT_ROOT/../model_rustprot/cattle-prod/target/release/cattle-prod" \
+        "$PROJECT_ROOT/rust/cattle-prod/target/release/cattle-prod"; do
+        if [ -x "$_CP_CANDIDATE" ]; then
+            _CP_BIN="$_CP_CANDIDATE"
+            break
+        fi
+    done
+fi
+
+if [ -n "$_CP_BIN" ]; then
+    log_ts "cattle-prod found: ${GREEN}${_CP_BIN}${NC}"
+    log_ts "  Set EVAL_CMD=$_CP_BIN to use Rust eval (faster inference)"
+else
+    if command -v cargo &>/dev/null; then
+        _CP_SRC=""
+        for _SRC in \
+            "$PROJECT_ROOT/../model_rustprot/cattle-prod" \
+            "$PROJECT_ROOT/rust/cattle-prod"; do
+            if [ -f "$_SRC/Cargo.toml" ]; then
+                _CP_SRC="$_SRC"
+                break
+            fi
+        done
+        if [ -n "$_CP_SRC" ]; then
+            log_ts "Building cattle-prod from source at $_CP_SRC..."
+            (cd "$_CP_SRC" && cargo build --release -p cattle-prod-cli 2>&1) && \
+                _CP_BIN="$_CP_SRC/target/release/cattle-prod" && \
+                log_ts "cattle-prod built: ${GREEN}${_CP_BIN}${NC}" || \
+                log_ts "${YELLOW}cattle-prod build failed; falling back to protenix${NC}"
+        else
+            log_ts "${YELLOW}cattle-prod source not found; using protenix for eval${NC}"
+        fi
+    else
+        log_ts "${YELLOW}cargo not found; cattle-prod unavailable; using protenix for eval${NC}"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Create output directories
 # ---------------------------------------------------------------------------
 log_ts ""
 log_ts "Creating output directories..."
@@ -171,7 +218,7 @@ mkdir -p "$PROJECT_ROOT/databases"
 mkdir -p "$PROJECT_ROOT/logs"
 
 # ---------------------------------------------------------------------------
-# 4. Generate the activation helper script
+# 5. Generate the activation helper script
 # ---------------------------------------------------------------------------
 ACTIVATE_SCRIPT="$SCRIPT_DIR/cascade_env.sh"
 log_ts "Writing activation helper: $ACTIVATE_SCRIPT"
@@ -181,12 +228,13 @@ cat > "$ACTIVATE_SCRIPT" << 'ENVEOF'
 # =============================================================================
 # CASCADE Environment Activation Helper
 # =============================================================================
-# Source this file to activate the cascade env and configure PXDESIGN_CMD:
+# Source this file to activate the cascade env and configure eval + PXDesign:
 #
 #   source scripts/cascade_env.sh
 #
 # This sets up:
-#   - Activates the 'cascade' conda env (Protenix 1.0.4)
+#   - Activates the 'cascade' conda env
+#   - Auto-detects cattle-prod (Rust, fast) or falls back to protenix (Python)
 #   - Exports PXDESIGN_CMD so the pipeline calls PXDesign from the 'pxdesign' env
 #   - Exports PROJECT_ROOT for convenience
 # =============================================================================
@@ -204,28 +252,54 @@ if [ "$CONDA_DEFAULT_ENV" != "cascade" ]; then
     return 1 2>/dev/null || exit 1
 fi
 
-# Configure PXDESIGN_CMD using the direct binary path (faster, works on all conda versions)
-# This is read by scripts/03_pxdesign_wrapper.py (line: os.environ.get("PXDESIGN_CMD"))
-_CONDA_BASE="$(conda info --base 2>/dev/null || echo "")"
-_PXD_BIN="${_CONDA_BASE}/envs/pxdesign/bin/pxdesign"
-if [ -x "$_PXD_BIN" ]; then
-    export PXDESIGN_CMD="$_PXD_BIN"
-else
-    export PXDESIGN_CMD="pxdesign"
-    echo "[WARNING] pxdesign binary not found at $_PXD_BIN; using 'pxdesign' (must be on PATH)"
+# Configure eval engine: prefer cattle-prod (Rust) over protenix (Python)
+if [ -z "$EVAL_CMD" ]; then
+    if command -v cattle-prod &>/dev/null; then
+        export EVAL_CMD="cattle-prod"
+    else
+        # Check common locations for cattle-prod binary
+        for _CP in \
+            "$PROJECT_ROOT/../model_rustprot/cattle-prod/target/release/cattle-prod" \
+            "$PROJECT_ROOT/rust/cattle-prod/target/release/cattle-prod"; do
+            if [ -x "$_CP" ]; then
+                export EVAL_CMD="$_CP"
+                break
+            fi
+        done
+    fi
+    if [ -z "$EVAL_CMD" ]; then
+        export EVAL_CMD="protenix"
+    fi
 fi
 
-# Verify both tools are reachable
+# Configure PXDESIGN_CMD
+_CONDA_BASE="$(conda info --base 2>/dev/null || echo "")"
+_PXD_BIN="${_CONDA_BASE}/envs/pxdesign/bin/pxdesign"
+if [ -z "$PXDESIGN_CMD" ]; then
+    if [ -x "$_PXD_BIN" ]; then
+        export PXDESIGN_CMD="$_PXD_BIN"
+    else
+        export PXDESIGN_CMD="pxdesign"
+    fi
+fi
+
+# Status display
 echo "============================================="
 echo " CASCADE Environment Active"
 echo "============================================="
 echo " conda env:    $CONDA_DEFAULT_ENV"
 
-_PROT_VER=$(python -c "import protenix; print(protenix.__version__)" 2>/dev/null || echo "?")
-echo " protenix:     v${_PROT_VER} (evaluation)"
+if [[ "$EVAL_CMD" == *"cattle-prod"* ]]; then
+    _EVAL_VER=$($EVAL_CMD --version 2>/dev/null || echo "cattle-prod")
+    echo " eval engine:  ${_EVAL_VER} (Rust, fast)"
+else
+    _EVAL_VER=$(python -c "import protenix; print(protenix.__version__)" 2>/dev/null || echo "?")
+    echo " eval engine:  protenix v${_EVAL_VER} (Python)"
+fi
+echo " EVAL_CMD:     $EVAL_CMD"
 
 _PXD_VER=$($PXDESIGN_CMD --help 2>/dev/null | head -1 || echo "?")
-echo " pxdesign:     ${_PXD_VER} (generation, via pxdesign env)"
+echo " pxdesign:     ${_PXD_VER} (generation)"
 echo " PXDESIGN_CMD: $PXDESIGN_CMD"
 echo " PROJECT_ROOT: $PROJECT_ROOT"
 echo "============================================="
@@ -234,7 +308,7 @@ echo "Ready. Run the pipeline with:"
 echo "  cd scripts && python evolution_orchestrator.py"
 echo "  # or: ./scripts/run_pipeline.sh"
 
-unset _CASCADE_SCRIPT_DIR _PROT_VER _PXD_VER
+unset _CASCADE_SCRIPT_DIR _EVAL_VER _PXD_VER
 ENVEOF
 
 chmod +x "$ACTIVATE_SCRIPT"
@@ -247,10 +321,11 @@ log_ts "${GREEN}=============================================${NC}"
 log_ts "${GREEN} Setup Complete!${NC}"
 log_ts "${GREEN}=============================================${NC}"
 echo ""
-echo "  Two conda environments are now configured:"
+echo "  Eval engine: ${_CP_BIN:-protenix (default)}"
 echo ""
-echo "    cascade   — Protenix 1.0.4 (structure eval, fitness scoring)"
-echo "    pxdesign  — Protenix 0.5.0+pxd (PXDesign variant generation)"
+echo "  Conda environments configured:"
+echo "    cascade   — Structure eval (cattle-prod or Protenix 1.0.4)"
+echo "    pxdesign  — PXDesign variant generation (Protenix 0.5.0+pxd)"
 echo ""
 echo "  The pipeline runs in 'cascade' and calls PXDesign cross-env."
 echo ""
@@ -259,6 +334,7 @@ echo "    source scripts/cascade_env.sh"
 echo ""
 echo "  Or manually:"
 echo "    conda activate cascade"
+echo "    export EVAL_CMD=cattle-prod     # or: export EVAL_CMD=protenix"
 echo "    export PXDESIGN_CMD=\"\$(conda info --base)/envs/pxdesign/bin/pxdesign\""
 echo ""
 

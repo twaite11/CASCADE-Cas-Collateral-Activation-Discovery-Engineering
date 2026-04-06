@@ -1,8 +1,8 @@
 #!/bin/bash
 # --- Option 4: Two-Phase MSA Workflow ---
 # After Phase 1 screening (no MSA), re-run top N baselines WITH MSA for higher-quality structures.
-# Baselines are ranked by Phase 1 Protenix ipTM score (from *_summary*.json); best first.
-# Evolution then uses these MSA-enhanced structures as seeds.
+# Baselines are ranked by Phase 1 ipTM score (from *_summary*.json or *_confidence*.json); best first.
+# Supports cattle-prod (Rust, preferred) and protenix (Python, fallback). Set EVAL_CMD to override.
 #
 # Usage: ./02b_rerun_top_with_msa.sh [N]
 #   N = number of top baselines to re-run (default: 5, matches NUM_INITIAL_LINEAGES)
@@ -16,6 +16,27 @@ JSON_DIR="../jsons"
 OUTPUT_DIR="../outputs/phase1_screening"
 METADATA_FILE="../metadata/variant_domain_metadata.json"
 TOP_N="${1:-5}"
+
+# --- Eval engine detection ---
+if [ -n "$EVAL_CMD" ]; then
+    EVAL_BIN="$EVAL_CMD"
+elif command -v cattle-prod &>/dev/null; then
+    EVAL_BIN="cattle-prod"
+elif command -v protenix &>/dev/null; then
+    EVAL_BIN="protenix"
+else
+    log_ts "ERROR: Neither cattle-prod nor protenix found on PATH. Set EVAL_CMD."
+    exit 1
+fi
+
+if [[ "$EVAL_BIN" == *"cattle-prod"* ]]; then
+    MINI_MODEL="cattle_prod_mini_default_v0.5.0"
+    ENGINE_NAME="cattle-prod"
+else
+    MINI_MODEL="protenix_mini_default_v0.5.0"
+    ENGINE_NAME="protenix"
+fi
+log_ts "Eval engine: $ENGINE_NAME ($EVAL_BIN)"
 
 if [ ! -f "$METADATA_FILE" ]; then
     log_ts "ERROR: Metadata not found at $METADATA_FILE. Run 01_parse_and_annotate.py first."
@@ -41,7 +62,7 @@ top_n = int('$TOP_N')
 with open(metadata_file) as f:
     meta = json.load(f)
 
-summaries = glob.glob(os.path.join(output_dir, '**', '*_summary*.json'), recursive=True)
+summaries = glob.glob(os.path.join(output_dir, '**', '*_summary*.json'), recursive=True) or glob.glob(os.path.join(output_dir, '**', '*_confidence*.json'), recursive=True)
 baseline_scores = {}
 
 for path in summaries:
@@ -93,17 +114,15 @@ for (( i=0; i<count; i++ )); do
     MSA_DIR="$OUTPUT_DIR/${bid}_msa"
     mkdir -p "$MSA_DIR"
 
-    log_ts "[1/2] Running MSA search (protenix msa) for $bid..."
-    if ! protenix msa --input "$json_file" --out_dir "$MSA_DIR" \
+    log_ts "[1/2] Running MSA search ($ENGINE_NAME msa) for $bid..."
+    if ! "$EVAL_BIN" msa --input "$json_file" --out_dir "$MSA_DIR" \
         > "$OUTPUT_DIR/${bid}_msa.log" 2>&1; then
         log_ts "MSA failed for $bid. Keeping original no-MSA PDB. Check $OUTPUT_DIR/${bid}_msa.log"
         continue
     fi
 
-    # Protenix msa writes the updated JSON to <original_dir>/<name>-update-msa.json
     MSA_JSON="$JSON_DIR/${bid}-update-msa.json"
     if [ ! -f "$MSA_JSON" ]; then
-        # Fallback: check if it wrote to the MSA output dir instead
         MSA_JSON="$MSA_DIR/$(basename "$json_file")"
     fi
     if [ ! -f "$MSA_JSON" ]; then
@@ -112,11 +131,11 @@ for (( i=0; i<count; i++ )); do
     fi
     log_ts "Found MSA-updated JSON: $MSA_JSON"
 
-    log_ts "[2/2] Running Protenix-Mini with MSA for $bid (replacing Phase 1 PDB)..."
-    protenix pred \
+    log_ts "[2/2] Running $ENGINE_NAME mini with MSA for $bid (replacing Phase 1 PDB)..."
+    "$EVAL_BIN" pred \
         -i "$MSA_JSON" \
         -o "$OUTPUT_DIR/${bid}_pred" \
-        -n "protenix_mini_default_v0.5.0" \
+        -n "$MINI_MODEL" \
         --use_msa true \
         --use_default_params true \
         > "$OUTPUT_DIR/${bid}_pred_msa.log" 2>&1

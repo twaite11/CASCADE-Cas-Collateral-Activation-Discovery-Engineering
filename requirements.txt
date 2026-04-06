@@ -1,8 +1,16 @@
 numpy
 biopython
-protenix
 pyyaml
 pandas
+fastapi
+uvicorn
+
+# Eval engine (one required):
+# Option A (recommended): cattle-prod — Rust implementation, faster inference
+#   cargo build --release -p cattle-prod-cli  (from model_rustprot/cattle-prod)
+#   then put target/release/cattle-prod on PATH (or set EVAL_CMD=/path/to/cattle-prod)
+# Option B: protenix — original Python implementation
+#   pip install protenix
 
 # Optional, for validate_crispr_repeats.py (CRISPR repeat structure validation):
 # ViennaRNA  # pip install ViennaRNA  OR  conda install -c bioconda viennarna

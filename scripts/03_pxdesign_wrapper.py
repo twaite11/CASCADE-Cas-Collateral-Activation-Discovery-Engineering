@@ -3,15 +3,14 @@ PXDesign wrapper for CASCADE evolution.
 Uses the actual PXDesign CLI: pxdesign infer -i <yaml> -o <dir> --N_sample N
 Generation only; we compute Protenix scores downstream. Generates YAML from baseline structure + metadata,
 runs inference, parses CIF output to variant FASTAs.
-Falls back to built-in sequence-level linker mutator when PXDesign CLI is unavailable.
 """
 import subprocess
 import json
 import os
 import glob
 import logging
-import hashlib
 from pathlib import Path
+import hashlib
 
 log = logging.getLogger(__name__)
 
@@ -37,13 +36,10 @@ def _compact_variant_name(
     lineage_seed: str,
     generation_num: int,
     variant_index: int,
-    fallback: bool = False,
 ) -> str:
+    """Concise, generation-stable variant naming: Lxxxxxx_g01_v00"""
     tag = _short_lineage_tag(lineage_seed)
-    base = f"{tag}_g{generation_num:02d}_v{variant_index:02d}"
-    if fallback:
-        return f"{base}_fb"
-    return base
+    return f"{tag}_g{generation_num:02d}_v{variant_index:02d}"
 
 
 def _get_structure_chain_ids(structure_path: str):
@@ -105,7 +101,7 @@ def _resolve_unknown_residues(seq: str, baseline_seq: str = "") -> str:
 
 
 def _pxdesign_available() -> bool:
-    """Check whether pxdesign CLI is reachable."""
+    """Check whether pxdesign CLI is reachable (returns True) or missing (returns False)."""
     import shutil
     pxdesign_bin = os.environ.get("PXDESIGN_CMD", "pxdesign")
     exe = pxdesign_bin.split()[0] if " " in pxdesign_bin else pxdesign_bin
@@ -114,92 +110,12 @@ def _pxdesign_available() -> bool:
     return shutil.which(exe) is not None
 
 
-_AA_ALL_STANDARD = list("ACDEFGHIKLMNPQRSTVWY")
-_LINKER_POOL = list("AGSTDENQKR")
-
-
-def _generate_variants_sequence_mutator(
-    full_seq: str,
-    coords: dict,
-    variant_count: int,
-    bias_json_path: str | None,
-    generation_num: int,
-    seed: int = 42,
-) -> list[str]:
-    """
-    Pure-sequence linker mutator: produces variant full-length sequences by mutating
-    only linker residues (REC->HEPN1 gap and HEPN1->HEPN2 gap), preserving catalytic
-    domains exactly. Uses RL bias when available; otherwise applies conservative
-    substitutions from a linker-friendly amino acid pool.
-
-    Returns list of mutated full-length sequences (same length as full_seq).
-    """
-    import numpy as np
-    rng = np.random.default_rng(seed + generation_num)
-
-    rec_end = coords["rec_end"]
-    hepn1_start = coords["hepn1_start"]
-    hepn1_end = coords["hepn1_end"]
-    hepn2_start = coords["hepn2_start"]
-
-    linker1_positions = list(range(rec_end, hepn1_start))
-    linker2_positions = list(range(hepn1_end, hepn2_start))
-    mutable_positions = linker1_positions + linker2_positions
-
-    if not mutable_positions:
-        log.warning("No mutable linker positions — domains are contiguous. Returning baseline.")
-        return [full_seq] * variant_count
-
-    bias = {}
-    if bias_json_path and os.path.exists(bias_json_path):
-        try:
-            with open(bias_json_path) as f:
-                bias = json.load(f)
-            log.info(f"  Sequence mutator: loaded RL bias ({len(bias)} positions)")
-        except Exception:
-            pass
-
-    n_mutable = len(mutable_positions)
-    base_rate = min(0.05 + 0.01 * generation_num, 0.20)
-
-    variants = []
-    for vi in range(variant_count):
-        seq_list = list(full_seq)
-
-        n_mutations = max(1, rng.poisson(base_rate * n_mutable))
-        n_mutations = min(n_mutations, n_mutable)
-
-        chosen = rng.choice(mutable_positions, size=n_mutations, replace=False)
-
-        for pos in chosen:
-            pos_str = str(pos + 1)
-            current_aa = seq_list[pos]
-
-            if pos_str in bias:
-                aa_weights = bias[pos_str]
-                candidates = [(aa, w) for aa, w in aa_weights.items()
-                              if aa != current_aa and w > 0 and aa in _AA_ALL_STANDARD]
-                if candidates:
-                    aas, ws = zip(*candidates)
-                    ws_arr = np.array(ws, dtype=float)
-                    ws_arr /= ws_arr.sum()
-                    seq_list[pos] = rng.choice(list(aas), p=ws_arr)
-                    continue
-
-            pool = [aa for aa in _LINKER_POOL if aa != current_aa]
-            seq_list[pos] = rng.choice(pool) if pool else current_aa
-
-        variants.append("".join(seq_list))
-
-    return variants
-
-
 def _apply_bias_to_sequence(full_seq: str, bias_json_path: str, coords: dict) -> str:
     """
     Apply RL bias matrix to the designed full sequence.
     Only modifies linker regions (preserves HEPN catalytic domains and REC).
     Bias matrix format: {"position_1based": {"amino_acid": weight, ...}, ...}
-    Higher positive weight -> prefer this AA; substitution applied when weight > threshold.
+    Higher positive weight → prefer this AA; substitution applied when weight > threshold.
     """
     if not bias_json_path or not os.path.exists(bias_json_path):
         return full_seq
@@ -218,15 +134,17 @@ def _apply_bias_to_sequence(full_seq: str, bias_json_path: str, coords: dict) ->
 
     for pos_str, aa_weights in bias.items():
         try:
-            pos = int(pos_str) - 1
+            pos = int(pos_str) - 1  # Mutations are 1-based; convert to 0-based index
         except ValueError:
             continue
         if pos < 0 or pos >= len(seq_list):
             continue
+        # Only modify linker regions (between REC↔HEPN1 and HEPN1↔HEPN2)
         in_linker1 = rec_end <= pos < hepn1_start
         in_linker2 = hepn1_end <= pos < hepn2_start
         if not (in_linker1 or in_linker2):
             continue
+        # Pick the amino acid with highest positive bias weight
         best_aa = max(aa_weights, key=aa_weights.get)
         best_weight = aa_weights[best_aa]
         if best_weight > 0.5 and best_aa != seq_list[pos]:
@@ -274,10 +192,12 @@ def generate_frozen_rec_config(metadata_db_path, variant_id, metadata_override=N
     rec_end = max(1, hepn1_start - 10)
     seq_len = variant_data.get("sequence_length", hepn2_end + 20)
 
+    # binder_length = linkers only (REC→HEPN1 and HEPN1→HEPN2); avoids 600-aa de novo design
+    # All coords are 0-based Python-slice indices; linker spans [rec_end, hepn1_start)
     linker1_len = max(0, hepn1_start - rec_end)
     linker2_len = max(0, hepn2_start - hepn1_end)
     binder_length = linker1_len + linker2_len
-    MIN_BINDER_LENGTH = 20
+    MIN_BINDER_LENGTH = 20  # PXDesign may struggle with very short binders
     if binder_length < MIN_BINDER_LENGTH:
         binder_length = MIN_BINDER_LENGTH
 
@@ -345,15 +265,17 @@ def run_pxdesign_generation(
     lineage_seed: str | None = None,
 ):
     """
-    Runs PXDesign via: pxdesign pipeline -i <yaml> -o <dir> --N_sample N
+    Runs PXDesign via: pxdesign infer -i <yaml> -o <dir> --N_sample N
     Generation only (no evaluation); we compute scores ourselves with Protenix later.
     Designs linkers only; stitches wild-type HEPN1/HEPN2 into output.
-    Falls back to built-in sequence-level linker mutator when PXDesign CLI is unavailable.
+    Raises RuntimeError if PXDesign is unavailable or fails.
     """
     log.info(f"Generating {variant_count} designs for {variant_id}...")
     os.makedirs(output_dir, exist_ok=True)
 
     coords = generate_frozen_rec_config(metadata_path, variant_id, metadata_override)
+    rec_end = coords["rec_end"]
+    binder_length = coords["binder_length"]
 
     if base_json_dir:
         base_json = os.path.join(base_json_dir, f"{variant_id}.json")
@@ -369,56 +291,42 @@ def run_pxdesign_generation(
     abs_out = os.path.abspath(output_dir)
     name_seed = lineage_seed or variant_id
 
-    def _write_variant_fasta(i: int, variant_full_seq: str, is_fallback: bool = False) -> str:
+    def _write_variant_fasta(i: int, variant_full_seq: str) -> str:
         name = _compact_variant_name(
             lineage_seed=name_seed,
             generation_num=max(1, int(generation_num)),
             variant_index=i,
-            fallback=is_fallback,
         )
         fasta_path = os.path.join(output_dir, f"{name}.fasta")
         with open(fasta_path, "w") as f:
             f.write(f">{name}\n{variant_full_seq}\n")
         return fasta_path
 
-    # ── Decide engine: PXDesign CLI or built-in sequence mutator ──
-    use_pxdesign = _pxdesign_available() and os.environ.get("CASCADE_FORCE_SEQ_MUTATOR", "") != "1"
-    pxdesign_succeeded = False
-
-    if use_pxdesign:
-        pxdesign_succeeded = _run_pxdesign_cli(
-            baseline_structure, variant_id, coords, output_dir, variant_count, bias_json_path,
+    # ── PXDesign is required — no fallback ──
+    if not _pxdesign_available():
+        raise RuntimeError(
+            "PXDesign CLI not found. Install PXDesign (bash install.sh --env pxdesign) "
+            "and set PXDESIGN_CMD to the binary path. See setup_dual_env.sh."
         )
 
-    if use_pxdesign and pxdesign_succeeded:
-        fastas = _parse_pxdesign_outputs(
-            abs_out, variant_count, full_seq, coords, bias_json_path,
-            output_dir, name_seed, generation_num,
-        )
-        if fastas:
-            return fastas
-        log.warning("PXDesign ran but produced no usable variants; falling through to sequence mutator.")
-
-    # ── Sequence-level linker mutator (no PXDesign dependency) ──
-    if not use_pxdesign:
-        log.info(
-            "[SeqMutator] PXDesign CLI not found — using built-in sequence-level linker mutator. "
-            "Set PXDESIGN_CMD to enable structure-guided generation."
-        )
-    else:
-        log.info("[SeqMutator] Falling back to sequence-level linker mutator after PXDesign failure.")
-
-    seed_val = hash(variant_id) & 0xFFFFFFFF
-    mutant_seqs = _generate_variants_sequence_mutator(
-        full_seq, coords, variant_count, bias_json_path, generation_num, seed=seed_val,
+    succeeded = _run_pxdesign_cli(
+        baseline_structure, variant_id, coords, output_dir, variant_count, bias_json_path,
     )
+    if not succeeded:
+        raise RuntimeError(
+            "PXDesign exited with non-zero status. Check logs above for stderr. "
+            "Common fix: pip install deepspeed==0.14.5 in the pxdesign env."
+        )
 
-    fastas = []
-    for i, mseq in enumerate(mutant_seqs):
-        mseq = _resolve_unknown_residues(mseq, full_seq)
-        mseq = _apply_bias_to_sequence(mseq, bias_json_path, coords)
-        fastas.append(_write_variant_fasta(i, mseq, is_fallback=False))
-    log.info(f"[SeqMutator] Wrote {len(fastas)} variant FASTA(s) to {output_dir}")
+    fastas = _parse_pxdesign_outputs(
+        abs_out, variant_count, full_seq, coords, bias_json_path,
+        output_dir, name_seed, generation_num,
+    )
+    if not fastas:
+        raise RuntimeError(
+            f"PXDesign ran successfully but produced no usable variants under {abs_out}. "
+            "Check design_outputs/*/summary.csv or predictions/*.cif."
+        )
     return fastas
 
 
@@ -468,18 +376,31 @@ def _run_pxdesign_cli(
             tail = 6000
             err = (result.stderr or "").strip()
             out = (result.stdout or "").strip()
-            log.warning(f"PXDesign exited with code {result.returncode}")
+            log.error(
+                "PXDesign FAILED (exit %d). Troubleshooting:\n"
+                "  1. Try PXDESIGN_SUBCOMMAND=infer if your version doesn't support 'pipeline'\n"
+                "  2. Check GPU memory: PXDesign + Protenix may exceed VRAM\n"
+                "  3. Verify: PXDESIGN_CMD=%s  PXDESIGN_SUBCOMMAND=%s\n"
+                "  4. Run manually: %s",
+                result.returncode, pxdesign_bin, sub, " ".join(cmd),
+            )
             if err:
                 log.error("PXDesign stderr (tail):\n%s", err[-tail:] if len(err) > tail else err)
             if out:
                 log.error("PXDesign stdout (tail):\n%s", out[-tail:] if len(out) > tail else out)
             return False
+        log.info("PXDesign completed successfully (exit 0)")
         return True
     except subprocess.TimeoutExpired:
-        log.error("PXDesign timed out after 1 hour")
+        log.error("PXDesign timed out after 1 hour — consider reducing --N_sample or using 'preview' preset")
         return False
     except FileNotFoundError:
-        log.error("PXDesign binary not found: %s", pxdesign_exec[0])
+        log.error(
+            "PXDesign binary not found: %s\n"
+            "  Install PXDesign and set PXDESIGN_CMD to the binary path.\n"
+            "  Or run: conda activate pxdesign && which pxdesign",
+            pxdesign_exec[0],
+        )
         return False
 
 
@@ -496,23 +417,19 @@ def _parse_pxdesign_outputs(
     """Parse PXDesign CSV/CIF outputs, stitch HEPN domains, write variant FASTAs."""
     from utils.hepn_structural_stitch import stitch_hepn_into_binder
 
-    def _write_variant_or_fallback(i: int, binder_seq: str) -> str:
+    def _write_stitched_variant(i: int, binder_seq: str) -> str | None:
         binder_seq = _resolve_unknown_residues(binder_seq, full_seq[coords["rec_end"]:])
         full = stitch_hepn_into_binder(binder_seq, full_seq, coords)
-        if full:
-            full = _resolve_unknown_residues(full, full_seq)
-            full = _apply_bias_to_sequence(full, bias_json_path, coords)
-            name = _compact_variant_name(name_seed, max(1, int(generation_num)), i, fallback=False)
-            fasta_path = os.path.join(output_dir, f"{name}.fasta")
-            with open(fasta_path, "w") as f:
-                f.write(f">{name}\n{full}\n")
-            return fasta_path
-        fallback_name = _compact_variant_name(name_seed, max(1, int(generation_num)), i, fallback=True)
-        fallback_path = os.path.join(output_dir, f"{fallback_name}.fasta")
-        with open(fallback_path, "w") as f:
-            f.write(f">{fallback_name}\n{full_seq}\n")
-        log.warning(f"Stitching failed for design {i}; writing baseline as fallback (will receive penalty)")
-        return fallback_path
+        if not full:
+            log.warning(f"Stitching failed for design {i}; skipping (no fallback)")
+            return None
+        full = _resolve_unknown_residues(full, full_seq)
+        full = _apply_bias_to_sequence(full, bias_json_path, coords)
+        name = _compact_variant_name(name_seed, max(1, int(generation_num)), i)
+        fasta_path = os.path.join(output_dir, f"{name}.fasta")
+        with open(fasta_path, "w") as f:
+            f.write(f">{name}\n{full}\n")
+        return fasta_path
 
     sample_csvs = glob.glob(os.path.join(abs_out, "**", "sample_level_output.csv"), recursive=True)
     design_out = os.path.join(abs_out, "design_outputs")
@@ -536,7 +453,9 @@ def _parse_pxdesign_outputs(
                         "Backbone-only outputs have no sequence identity."
                     )
                     continue
-                fastas.append(_write_variant_or_fallback(i, binder_seq))
+                path = _write_stitched_variant(i, binder_seq)
+                if path:
+                    fastas.append(path)
             except Exception as ex:
                 log.warning(f"Could not extract sequence from {cif_path}: {ex}")
         return fastas
@@ -555,7 +474,9 @@ def _parse_pxdesign_outputs(
                 binder_seq = str(row.get("sequence", ""))
                 if not binder_seq or len(binder_seq) < 10:
                     continue
-                fastas.append(_write_variant_or_fallback(i, binder_seq))
+                path = _write_stitched_variant(i, binder_seq)
+                if path:
+                    fastas.append(path)
         except Exception as ex:
             log.warning(f"Could not parse {summary_path}: {ex}")
     return fastas[:variant_count]

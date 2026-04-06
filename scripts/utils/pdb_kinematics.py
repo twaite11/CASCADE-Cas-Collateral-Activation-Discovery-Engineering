@@ -65,30 +65,73 @@ def _load_structure(path):
         parser = PDBParser(QUIET=True)
     return parser.get_structure("structure", path)
 
+def _compute_interface_score_from_pae(data):
+    """
+    Derive an AF2-style interface/interaction-geometry score from Protenix
+    chain-pair metrics when the explicit af2_ig key is absent.
+
+    Strategy (in priority order):
+    1. chain_pair_iptm matrix: mean of off-diagonal elements gives cross-chain
+       interface confidence (protein-RNA interaction quality).
+    2. Weighted combination: 0.8*iptm + 0.2*ptm as a proxy when no
+       chain_pair data is available but global scores exist.
+    """
+    cp_iptm = data.get("chain_pair_iptm")
+    if cp_iptm and isinstance(cp_iptm, (list, tuple)):
+        off_diag = []
+        n = len(cp_iptm)
+        for i in range(n):
+            row = cp_iptm[i]
+            if not isinstance(row, (list, tuple)):
+                continue
+            for j in range(len(row)):
+                if i != j:
+                    try:
+                        off_diag.append(float(row[j]))
+                    except (ValueError, TypeError):
+                        pass
+        if off_diag:
+            return float(np.mean(off_diag))
+
+    iptm = float(data.get("iptm", 0.0) or 0.0)
+    ptm = float(data.get("ptm", 0.0) or 0.0)
+    if iptm > 0.0 or ptm > 0.0:
+        return 0.8 * iptm + 0.2 * ptm
+
+    return 0.0
+
+
 def extract_protenix_scores(summary_json_path):
     """
-    Parses the Protenix _summary.json output to extract the true ipTM, pTM, and AF2-IG scores.
+    Parses the confidence/summary JSON output to extract ipTM, pTM, and AF2-IG scores.
+    Compatible with both Protenix (*_summary*.json) and cattle-prod (*_summary_confidence.json).
+
+    AF2-IG derivation: if the explicit af2_ig/af2_ig_score key is absent or zero,
+    computes an interface score from chain_pair_iptm (off-diagonal mean) or falls
+    back to a weighted iptm/ptm proxy.
     """
     if not os.path.exists(summary_json_path):
-        raise FileNotFoundError(f"Protenix summary file not found: {summary_json_path}")
+        raise FileNotFoundError(f"Summary/confidence file not found: {summary_json_path}")
 
     rust_out = _run_rust_structscore(["extract-scores", "--summary", str(summary_json_path)])
     if rust_out is not None:
         try:
-            return json.loads(rust_out)
-        except (json.JSONDecodeError, TypeError):
+            parsed = json.loads(rust_out)
+            if float(parsed.get("af2_ig", 0.0)) > 0.0:
+                return parsed
+        except (json.JSONDecodeError, TypeError, ValueError):
             pass
 
     with open(summary_json_path, 'r') as f:
         data = json.load(f)
         
-    # Standard AlphaFold3/Protenix summary dictionary keys
-    iptm = float(data.get('iptm', 0.0))
-    ptm = float(data.get('ptm', 0.0))
-    ranking_score = float(data.get('ranking_score', 0.0))
-    
-    # Extract AF2-IG (Interface Gap/Confidence) score which is critical for scoring RNP complexes
-    af2_ig = float(data.get('af2_ig', data.get('af2_ig_score', 0.0)))
+    iptm = float(data.get('iptm', 0.0) or 0.0)
+    ptm = float(data.get('ptm', 0.0) or 0.0)
+    ranking_score = float(data.get('ranking_score', 0.0) or 0.0)
+    af2_ig = float(data.get('af2_ig', data.get('af2_ig_score', 0.0)) or 0.0)
+
+    if af2_ig == 0.0:
+        af2_ig = _compute_interface_score_from_pae(data)
     
     return {
         "iptm": iptm,

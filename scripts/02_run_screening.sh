@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # --- RunPod Phase 1 Execution Script ---
-# This script executes the high-throughput 'True Cas' test utilizing
-# the lightweight Protenix-Mini model to drastically save on compute costs.
-# Uses protenix msa (when available) for better quality; falls back to raw JSON.
+# This script executes the high-throughput screening utilizing the lightweight
+# mini model to drastically save on compute costs.
+# Supports both cattle-prod (Rust, preferred) and protenix (Python, fallback).
+# Set EVAL_CMD to override auto-detection (e.g. EVAL_CMD=protenix).
 #
 # Multi-GPU: set NUM_GPUS to parallelize across GPUs (e.g. NUM_GPUS=4).
 # Skips baselines that already have outputs in OUTPUT_DIR.
@@ -15,6 +16,27 @@ JSON_DIR="../jsons"
 OUTPUT_DIR="../outputs/phase1_screening"
 SKIP_MSA="${SKIP_MSA:-1}"
 NUM_GPUS="${NUM_GPUS:-1}"
+
+# --- Eval engine detection ---
+if [ -n "$EVAL_CMD" ]; then
+    EVAL_BIN="$EVAL_CMD"
+elif command -v cattle-prod &>/dev/null; then
+    EVAL_BIN="cattle-prod"
+elif command -v protenix &>/dev/null; then
+    EVAL_BIN="protenix"
+else
+    log_ts "ERROR: Neither cattle-prod nor protenix found on PATH. Set EVAL_CMD."
+    exit 1
+fi
+
+if [[ "$EVAL_BIN" == *"cattle-prod"* ]]; then
+    MINI_MODEL="cattle_prod_mini_default_v0.5.0"
+    ENGINE_NAME="cattle-prod"
+else
+    MINI_MODEL="protenix_mini_default_v0.5.0"
+    ENGINE_NAME="protenix"
+fi
+log_ts "Eval engine: $ENGINE_NAME ($EVAL_BIN)"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -35,14 +57,14 @@ run_single() {
     echo "[GPU $gpu_id] Processing Hit: $base_name"
     echo "=================================================="
 
-    # Step 1: Optional MSA (skipped by default - remote server is slow)
+    # Step 1: MSA enrichment (always enabled for maximum robustness)
     PREDICT_INPUT="$json_file"
-    USE_MSA="false"
+    USE_MSA="true"
     if [ "$SKIP_MSA" != "1" ]; then
         MSA_DIR="$OUTPUT_DIR/${base_name}_msa"
         mkdir -p "$MSA_DIR"
-        echo "[1/2] Running MSA search (protenix msa)..."
-        if CUDA_VISIBLE_DEVICES="$gpu_id" protenix msa --input "$json_file" --out_dir "$MSA_DIR" > "$OUTPUT_DIR/${base_name}_msa.log" 2>&1; then
+        echo "[1/2] Running MSA search ($ENGINE_NAME msa)..."
+        if CUDA_VISIBLE_DEVICES="$gpu_id" "$EVAL_BIN" msa --input "$json_file" --out_dir "$MSA_DIR" > "$OUTPUT_DIR/${base_name}_msa.log" 2>&1; then
             MSA_JSON="$JSON_DIR/${base_name}-update-msa.json"
             if [ ! -f "$MSA_JSON" ]; then
                 MSA_JSON="$MSA_DIR/$(basename "$json_file")"
@@ -55,21 +77,21 @@ run_single() {
             log_ts "MSA failed for $base_name, using raw JSON..."
         fi
     else
-        log_ts "[1/2] Skipping MSA (SKIP_MSA=1), using raw JSON..."
+        log_ts "[1/2] Skipping MSA enrichment (SKIP_MSA=1), model MSA pathway still active..."
     fi
 
-    # Step 2: Protenix-Mini prediction
-    log_ts "[2/2] Running Protenix-Mini prediction (may take 2-10 min per hit)..."
-    CUDA_VISIBLE_DEVICES="$gpu_id" protenix pred \
+    # Step 2: Mini prediction
+    log_ts "[2/2] Running $ENGINE_NAME mini prediction (may take 2-10 min per hit)..."
+    CUDA_VISIBLE_DEVICES="$gpu_id" "$EVAL_BIN" pred \
         -i "$PREDICT_INPUT" \
         -o "$pred_dir" \
-        -n "protenix_mini_default_v0.5.0" \
+        -n "$MINI_MODEL" \
         --use_msa "$USE_MSA" \
         --use_default_params true \
         > "$OUTPUT_DIR/${base_name}_pred.log" 2>&1
 
     if [ $? -ne 0 ]; then
-        log_ts "WARNING: protenix pred failed for $base_name. Check $OUTPUT_DIR/${base_name}_pred.log"
+        log_ts "WARNING: $ENGINE_NAME pred failed for $base_name. Check $OUTPUT_DIR/${base_name}_pred.log"
     else
         log_ts "Completed $base_name. Outputs saved to $pred_dir/"
     fi

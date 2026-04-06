@@ -34,14 +34,27 @@ elif [ -z "$VIRTUAL_ENV" ] && [ -z "$CONDA_DEFAULT_ENV" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Auto-detect eval engine: cattle-prod (Rust, fast) preferred, protenix fallback
+# ---------------------------------------------------------------------------
+if [ -z "$EVAL_CMD" ]; then
+    if command -v cattle-prod &>/dev/null; then
+        export EVAL_CMD="cattle-prod"
+        log_ts "Auto-detected cattle-prod (Rust eval engine) -> EVAL_CMD=$EVAL_CMD"
+    elif command -v protenix &>/dev/null; then
+        export EVAL_CMD="protenix"
+        log_ts "Using protenix (Python eval engine) -> EVAL_CMD=$EVAL_CMD"
+    else
+        log_ts "WARNING: Neither cattle-prod nor protenix found on PATH."
+        log_ts "  Set EVAL_CMD to point to a structure prediction binary."
+    fi
+else
+    log_ts "Using EVAL_CMD=$EVAL_CMD"
+fi
+
+# ---------------------------------------------------------------------------
 # Auto-detect PXDESIGN_CMD if not already set
 # ---------------------------------------------------------------------------
-# PXDesign needs Protenix 0.5.0+pxd (in the 'pxdesign' conda env), while
-# the main pipeline uses Protenix 1.0.4 (in 'cascade' or .venv).
-# If PXDESIGN_CMD is not set, check if a 'pxdesign' conda env exists and
-# configure cross-env invocation automatically.
 if [ -z "$PXDESIGN_CMD" ]; then
-    # Prefer direct binary path (faster, no conda run overhead, works on all conda versions)
     _CONDA_BASE="$(conda info --base 2>/dev/null || echo "")"
     _PXD_BIN="${_CONDA_BASE}/envs/pxdesign/bin/pxdesign"
     if [ -n "$_CONDA_BASE" ] && [ -x "$_PXD_BIN" ]; then
@@ -64,7 +77,7 @@ log_ts "Phase 1a: Parse and annotate (CPU)..."
 python 01_parse_and_annotate.py
 
 # Phase 1b: Screening
-log_ts "Phase 1b: Protenix-Mini screening (GPU, no MSA)..."
+log_ts "Phase 1b: Structure screening via $EVAL_CMD (GPU, no MSA)..."
 ./02_run_screening.sh
 
 # Phase 1c (optional): Re-run top N with MSA for higher-quality seeds

@@ -45,8 +45,27 @@ from utils.protenix_eval import (
     generate_offtarget_json,
     TARGET_REGION,
     DUMMY_SPACER_RNA,
+    EVAL_ENGINE,
 )
 from utils.pdb_kinematics import calculate_hepn_shift, extract_protenix_scores, find_structure_files
+
+
+def _find_mini_summary(eval_dir, variant_name, state_suffix):
+    """Locate the summary JSON from a mini inference run for a variant's ON or OFF state."""
+    import glob as _glob
+    pred_dir = os.path.join(eval_dir, f"{variant_name}_{state_suffix}")
+    if not os.path.isdir(pred_dir):
+        return None, None
+    summary_files = _glob.glob(os.path.join(pred_dir, "**", "*_summary*.json"), recursive=True)
+    if not summary_files:
+        summary_files = _glob.glob(os.path.join(pred_dir, "**", "*_confidence*.json"), recursive=True)
+    struct_files = _glob.glob(os.path.join(pred_dir, "**", "*.cif"), recursive=True)
+    if not struct_files:
+        struct_files = _glob.glob(os.path.join(pred_dir, "**", "*.pdb"), recursive=True)
+    if struct_files and summary_files:
+        return struct_files[0], summary_files[0]
+    return None, None
+
 
 # --- Configuration ---
 METADATA_FILE = "../metadata/variant_domain_metadata.json"
@@ -101,7 +120,7 @@ def _get_next_baseline_from_queue(lineage_queue):
 
 
 def _load_validated_baseline_ids():
-    """Load baseline IDs that passed CRISPR repeat validation. Returns None if file missing or empty (use all)."""
+    """Load baseline IDs that passed CRISPR repeat validation. Returns None if file missing (use all)."""
     path = os.path.join(os.path.dirname(__file__), VALIDATED_IDS_FILE)
     if not os.path.isfile(path):
         return None
@@ -111,6 +130,7 @@ def _load_validated_baseline_ids():
             bid = line.strip()
             if bid:
                 ids.add(bid)
+    # Empty file or validation wrote no IDs (e.g. ViennaRNA missing): do not restrict to zero baselines.
     if not ids:
         log.warning(
             "%s is empty or has no IDs — using all baselines from metadata. "
@@ -508,11 +528,7 @@ def main_evolution_loop():
                 if h1_idx is None or h2_idx is None:
                     continue
 
-                log.info(f"Evaluating variant {variant_name} (Protenix mini OFF/ON - may take 2-5 min each)...")
-                log.info(
-                    f"[VariantMeta] gen={generation_counter} baseline={baseline_id} "
-                    f"variant={variant_name} muts={len(mutations_made)} h1={h1_idx} h2={h2_idx} crrna={crrna_lookup_id}"
-                )
+                log.info(f"Evaluating variant {variant_name} ({EVAL_ENGINE} mini OFF/ON - may take 2-5 min each)...")
                 off_json, on_json = generate_evaluation_jsons(
                     variant_fasta, baseline_id, METADATA_FILE, FAST_EVAL_DIR, crrna_lookup_id=crrna_lookup_id
                 )
@@ -529,7 +545,7 @@ def main_evolution_loop():
                     if SLEEP_AFTER_PROTENIX_MINI > 0:
                         time.sleep(SLEEP_AFTER_PROTENIX_MINI)
                 except Exception as e:
-                    log.warning(f"Protenix failed for {variant_name}: {e}")
+                    log.warning(f"{EVAL_ENGINE} failed for {variant_name}: {e}")
                     fitness = compute_fitness(0, 999, 0.4, 0, False, None)
                     gym.register_evaluation(variant_name, mutations_made, 0, 999, 0.4, af2_ig_score=0.0, is_full_ternary=False, offtarget_by_mismatch=None)
                     save_rl_training_record(
@@ -542,23 +558,32 @@ def main_evolution_loop():
 
                 off_dist = calculate_hepn_shift(off_pdb, h1_idx, h2_idx)
                 on_dist = calculate_hepn_shift(on_pdb, h1_idx, h2_idx)
-                log.info(
-                    f"[HEPN mini] {variant_name} OFF={off_dist:.1f}A ON={on_dist:.1f}A "
-                    f"delta={off_dist - on_dist:.1f}A"
-                )
+
                 has_potential = (off_dist >= MIN_OFF_DISTANCE) and (on_dist <= MAX_ON_DISTANCE)
                 log.info(
-                    f"[FilterGate] {variant_name} pass={has_potential} "
-                    f"(OFF>={MIN_OFF_DISTANCE:.1f}A and ON<={MAX_ON_DISTANCE:.1f}A)"
+                    f"[HEPN mini] {variant_name} OFF={off_dist:.1f}A ON={on_dist:.1f}A delta={off_dist - on_dist:.1f}A"
                 )
+                log.info(f"[FilterGate] {variant_name} pass={has_potential} (OFF>={MIN_OFF_DISTANCE}A and ON<={MAX_ON_DISTANCE}A)")
 
                 offtarget_by_mismatch = {}
                 hf_pdb_path = None
-                iptm, af2_ig = 0.4, 0.0
                 true_on_dist = on_dist
 
+                # Extract mini-model scores as baseline (avoids 0.4/0.0 defaults)
+                mini_on_summary = None
+                try:
+                    _, mini_on_summary = _find_mini_summary(FAST_EVAL_DIR, variant_name, "ON")
+                except Exception:
+                    pass
+                if mini_on_summary:
+                    mini_scores = extract_protenix_scores(mini_on_summary)
+                    iptm = mini_scores["iptm"] if mini_scores["iptm"] > 0.0 else 0.4
+                    af2_ig = mini_scores["af2_ig"]
+                else:
+                    iptm, af2_ig = 0.4, 0.0
+
                 if has_potential:
-                    log.info("Filter passed. Running Protenix base ternary (may take 10-30 min)...")
+                    log.info(f"Filter passed. Running {EVAL_ENGINE} base ternary (may take 10-30 min)...")
 
                     hf_pdb, hf_summary = run_protenix_inference(
                         on_json, HIGH_FIDELITY_DIR, model_tier="base", seqres_db_path=SEQRES_DB_PATH
@@ -592,16 +617,20 @@ def main_evolution_loop():
                             offtarget_by_mismatch[n_mismatch] = MIN_OFF_DISTANCE  # Assume specific on failure
                     if offtarget_by_mismatch:
                         mm_str = " | ".join(f"{k}mm:{v:.1f}A" for k, v in sorted(offtarget_by_mismatch.items()))
-                        log.info(f"[Specificity] {variant_name} {mm_str}")
+                        log.info(f"[Specificity] {variant_name} | {mm_str}")
+
+                score_source = "base" if has_potential else ("mini" if mini_on_summary else "default")
+                log.info(
+                    f"[HEPN scored] {variant_name} OFF={off_dist:.1f}A ON={true_on_dist:.1f}A "
+                    f"delta={off_dist - true_on_dist:.1f}A iptm={iptm:.3f} af2_ig={af2_ig:.3f} "
+                    f"fitness={compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None):.2f} "
+                    f"(scores from {score_source})"
+                )
 
                 fitness = compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None)
                 if "fallback" in variant_name:
                     fitness -= FALLBACK_FITNESS_PENALTY
                     log.info(f"Fallback variant {variant_name}: applying penalty ({FALLBACK_FITNESS_PENALTY})")
-                log.info(
-                    f"[HEPN scored] {variant_name} OFF={off_dist:.1f}A ON={true_on_dist:.1f}A "
-                    f"delta={off_dist - true_on_dist:.1f}A iptm={iptm:.3f} af2_ig={af2_ig:.3f} fitness={fitness:.2f}"
-                )
                 gym.register_evaluation(
                     variant_name, mutations_made, off_dist, true_on_dist, iptm,
                     af2_ig_score=af2_ig, is_full_ternary=has_potential,
