@@ -313,9 +313,10 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
                 record_idx += 1
                 if not raw_seq:
                     continue
-                # Record 1 is always the input/native sequence — skip it.
-                # Also skip any record explicitly marked as template.
-                if record_idx == 1 or header.startswith(">T="):
+                # Record 1 is always the input/native sequence (all X for
+                # backbone-only inputs). Designed sequences start with
+                # ">T=<temperature>, sample=N, score=..." — do NOT skip those.
+                if record_idx == 1:
                     log.debug(f"  MPNN skipping input record: {header[:80]}")
                     continue
                 # Multi-chain outputs use '/' as chain separator — take
