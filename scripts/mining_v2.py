@@ -59,6 +59,8 @@ MIN_HEPN_PAIRS = 2
 HEPN_MIN_SPACING = 100
 HEPN_MAX_SPACING = 800
 
+CAS13_REF_DB = PROJECT_ROOT / "data" / "cas13_reference_db.fasta"
+
 CAS13_REF_SEQS = {
     "RfxCas13d": "MKISIDKDSFLGLVDAEEMIALAAEAGFRGIELNAGLSGINIVPLMKN",
     "PspCas13b": "MNIPALRQQAMFQLYQGATFHYEWYRFDKESSRHKSEQRFDYRELTEE",
@@ -121,7 +123,10 @@ def run_diamond_blast(contigs_fasta: str, ref_db: str, output_dir: str,
 
 
 def _create_cas13_reference_fasta(output_dir: str) -> str:
-    """Create a reference FASTA from built-in Cas13 sequences."""
+    """Use comprehensive Cas13 reference DB if available, else fall back to built-in fragments."""
+    if CAS13_REF_DB.exists():
+        log.info(f"Using comprehensive reference DB: {CAS13_REF_DB}")
+        return str(CAS13_REF_DB)
     ref_path = os.path.join(output_dir, "cas13_references.fasta")
     with open(ref_path, "w") as f:
         for name, seq in CAS13_REF_SEQS.items():

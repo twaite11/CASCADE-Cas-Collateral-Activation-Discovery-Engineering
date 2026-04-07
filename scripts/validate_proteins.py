@@ -36,13 +36,37 @@ METADATA_JSON = PROJECT_ROOT / "metadata" / "variant_domain_metadata.json"
 HEPN_REGEX = re.compile(r"R.{3,8}H")
 STANDARD_AA = set("ACDEFGHIKLMNPQRSTVWY")
 
-KNOWN_CAS13_REFS = {
-    "LwaCas13a": "MKVTKVGGISHKKYTSEGRLVKSESEENRTDERLSALLNMRLDMYIKNPSSTETKENQKRIGKLKKFFSNKMVYLKDNTLSLKNGKKENIDREYSETDILESDVRDKKNFAVLKKIYLNENVNSEELEVFRNDIKKKLNKINSLKYSFEKNKANYQKINENNIEKVEGKSKRNIIYDYYRESAKRDAYVSNVKEAFDKLYKEEDIAKLVLEIENLTKLEKYKIREFYHEIIGRKNDKENFAKIIYEEIQNVNNMKELIEKVPDMSELKKSQVFYKYYLDKEELNDKNIKYAFCHFVEIEMSQLLKNYVYKRLSNISNDKIKRIFEYQNLKKLIENKLLNKLDTYVRNCGKYNYYLQDGEIATSDFIARNRQNEAFLRNIIGVSSVAYFSLRNILETENENDITGRMRGKTVKNNKGEEKYVSGEVDKIYNENKKNEVKENLKMFYSYDFNMDNKNEIEDFFANIDEAISSIRHGIVHFNLELEGKDIFAFKNIAPSEISKKMFQNEINEKKLKLKIFRQLNSANVFRYLEKYKILNYLKRTRFEFVNKNIPFVPSFTKLYSRIDDLKNSLGIYWKTPKTNDDNKTKEIIDAQIYLLKNIYYGEFLNYFMSNNGNFFEISKEIIELNKNDKRNLKTGFYKLQKFEDIQEKIPKEYLANIQSLYMINAGNQDEEEKDTYIDFIQKIFLKGFMTYLANNGRLSLIYIGSDEETNTSLAEKKQEFDKFLKKYEQNNNIKIPYEINEFLREIKLGNILKYTERLNMFYLILKLLNHKELTNLKGSLEKYQSANKEEAFSDQLELINLLNLDNNRVTEDFELEADEIGKFLDFNGNKVKDNKELKKFDTNKIYFDGENIIKHRAFYNIKKYGMLNLLEKIADKAGYKISIEELKKYSNKKNEIEKNHKMQENLHRKYARPRKDEKFTDEDYESYKQAIENIEEYTHLKNKVEFNELNLLQGLLLRILHRLVGYTSIWERDLRFRLKGEFPENQYIEEIFNFENKKNVKYKGGQIVEKYIKFYKELHQNDEVKINKYSSANIKVLKQEKKDLYIANYIAAFNYIPHAEISLLEVLENLRKLLSYDRKLKNAVMKSVVDILKEYGFVATFKIGADKKIGIQTLESEKIVHLKNLKKKKLMTDRNSEELCKLVKIMFEYKMEEKKSEN",
-    "RfxCas13d_Nterm": "MAKKNKMPLSEKLLNDYFKVGKC",
-    "PspCas13b_Nterm": "MNIPALRQQAMFQLYQGATFHYE",
-}
+CAS13_REF_DB = PROJECT_ROOT / "data" / "cas13_reference_db.fasta"
 
-CAS13_LENGTH_RANGE = (800, 1400)
+def _load_cas13_refs() -> dict:
+    """Load comprehensive Cas13 reference sequences from FASTA file."""
+    refs = {}
+    if CAS13_REF_DB.exists():
+        current_id = ""
+        current_seq = []
+        with open(CAS13_REF_DB) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(">"):
+                    if current_id and current_seq:
+                        refs[current_id] = "".join(current_seq)
+                    current_id = line[1:].split()[0]
+                    current_seq = []
+                else:
+                    current_seq.append(line)
+            if current_id and current_seq:
+                refs[current_id] = "".join(current_seq)
+    if not refs:
+        refs = {
+            "LbuCas13a": "MKVTKVGGISHKKYTSEGRLVKSESEENRTDERLSALLNMRLDMYIKN",
+            "RfxCas13d": "MAKKNKMKPRELREAQKKARQLKAAEINNNAAPAIAAMPAAEVIAPVAE",
+            "PbuCas13b": "MQKQDKLFVDRKKNAIFAFPKYITIMENKEKPEPIYYELTDKHFWAAFL",
+        }
+    return refs
+
+KNOWN_CAS13_REFS = _load_cas13_refs()
+
+CAS13_LENGTH_RANGE = (600, 1400)
 IDEAL_LENGTH_RANGE = (900, 1200)
 
 HYDROPHOBIC = set("AILMFVPW")
@@ -219,7 +243,7 @@ def _pair_score(m1, m2, spacing, seq_len):
 
 
 def check_homology(seq: str) -> dict:
-    """Local alignment against known Cas13 reference sequences."""
+    """Local alignment against known Cas13 reference sequences (all subtypes)."""
     issues = []
     info = []
 
@@ -232,23 +256,34 @@ def check_homology(seq: str) -> dict:
             identity = _kmer_identity(seq[:50], ref_seq, k=4)
             region = "N-terminal"
         else:
-            n_term = _kmer_identity(seq[:200], ref_seq[:200], k=5)
-            c_term = _kmer_identity(seq[-200:], ref_seq[-200:], k=5)
-            full = _kmer_identity(seq, ref_seq, k=6)
-            identity = max(n_term, c_term, full)
-            region = "N-term" if n_term == identity else ("C-term" if c_term == identity else "full")
+            n_term = _kmer_identity(seq[:250], ref_seq[:250], k=4)
+            c_term = _kmer_identity(seq[-250:], ref_seq[-250:], k=4)
+            mid = _kmer_identity(seq[len(seq)//3:2*len(seq)//3],
+                                 ref_seq[len(ref_seq)//3:2*len(ref_seq)//3], k=4)
+            full_k5 = _kmer_identity(seq, ref_seq, k=5)
+            full_k4 = _kmer_identity(seq, ref_seq, k=4)
+            identity = max(n_term, c_term, mid, full_k5, full_k4)
+            if identity == n_term:
+                region = "N-term"
+            elif identity == c_term:
+                region = "C-term"
+            elif identity == mid:
+                region = "middle"
+            else:
+                region = "full"
 
         if identity > best_identity:
             best_identity = identity
             best_ref = ref_name
             best_region = region
 
-    if best_identity < 0.02:
-        issues.append(f"NO HOMOLOGY to known Cas13 references (best: {best_identity:.1%} to {best_ref})")
-    elif best_identity < 0.05:
-        issues.append(f"VERY LOW homology: {best_identity:.1%} to {best_ref} ({best_region}) — may not be Cas13")
-    elif best_identity < 0.10:
-        info.append(f"Low but detectable homology: {best_identity:.1%} to {best_ref} ({best_region}) — could be distant Cas13")
+    if best_identity < 0.03:
+        issues.append(f"NO HOMOLOGY to any of {len(KNOWN_CAS13_REFS)} Cas13 refs "
+                      f"(best: {best_identity:.1%} to {best_ref})")
+    elif best_identity < 0.06:
+        issues.append(f"VERY LOW homology: {best_identity:.1%} to {best_ref} ({best_region})")
+    elif best_identity < 0.12:
+        info.append(f"Weak homology: {best_identity:.1%} to {best_ref} ({best_region}) — possible distant Cas13")
     else:
         info.append(f"Homology: {best_identity:.1%} to {best_ref} ({best_region})")
 
