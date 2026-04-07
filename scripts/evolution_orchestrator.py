@@ -509,6 +509,9 @@ def _resolve_best_baseline(best_name, best_fasta, best_hf_pdb, crrna_lookup_id, 
     (baseline_id, pdb_path, fasta_path, crrna_lookup_id).
     Copies files to FINAL_HITS_DIR and returns the new baseline or None on failure.
     """
+    if not best_fasta or not os.path.exists(best_fasta):
+        log.warning(f"No FASTA available for {best_name}; cannot resolve as baseline")
+        return None
     os.makedirs(FINAL_HITS_DIR, exist_ok=True)
     best_fasta_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_optimal.fasta")
     shutil.copy(best_fasta, best_fasta_dest)
@@ -557,9 +560,12 @@ def _evaluate_baseline_reference(baseline_id, baseline_fasta_path, crrna_lookup_
         return None
 
     import tempfile
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".fasta", delete=False, prefix="baseline_") as f:
+    baseline_fasta_dir = os.path.join(FAST_EVAL_DIR, "baseline_fastas")
+    os.makedirs(baseline_fasta_dir, exist_ok=True)
+    persistent_fasta = os.path.join(baseline_fasta_dir, f"{baseline_id}.fasta")
+    with open(persistent_fasta, "w") as f:
         f.write(f">{baseline_id}\n{seq}\n")
-        tmp_fasta = f.name
+    tmp_fasta = persistent_fasta
 
     try:
         h1_idx, h2_idx = get_catalytic_histidine_indices(tmp_fasta)
@@ -596,7 +602,7 @@ def _evaluate_baseline_reference(baseline_id, baseline_fasta_path, crrna_lookup_
             f"delta={off_dist - on_dist:.1f}A iptm={iptm:.3f} fitness={fitness:.2f}"
         )
         return {
-            "name": baseline_id, "fasta": baseline_fasta_path, "fitness": fitness,
+            "name": baseline_id, "fasta": persistent_fasta, "fitness": fitness,
             "off": off_dist, "on": on_dist, "iptm": iptm, "af2_ig": af2_ig,
             "hf_pdb": None, "crrna_lid": crrna_lookup_id, "offtarget": None,
         }
@@ -604,11 +610,6 @@ def _evaluate_baseline_reference(baseline_id, baseline_fasta_path, crrna_lookup_
     except Exception as e:
         log.warning(f"Baseline evaluation failed for {baseline_id}: {e}")
         return None
-    finally:
-        try:
-            os.unlink(tmp_fasta)
-        except OSError:
-            pass
 
 
 def _run_single_lineage(worker_id, baselines, gpu_lock):
