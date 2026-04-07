@@ -305,7 +305,7 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 4, temperature: float
             "--out_folder", out_dir,
             "--num_seq_per_target", str(num_seqs),
             "--sampling_temp", str(temperature),
-            "--batch_size", "8",
+            "--batch_size", str(min(8, num_seqs)),
         ]
         log.info(f"  MPNN cmd: {' '.join(mpnn_cmd)}")
         try:
@@ -555,7 +555,7 @@ def _run_mpnn_refinement(
             "--out_folder", out_dir,
             "--num_seq_per_target", str(variant_count),
             "--sampling_temp", str(design_temp),
-            "--batch_size", "8",
+            "--batch_size", str(min(8, variant_count)),
             "--fixed_positions_jsonl", fixed_pos_path,
         ]
         if pssm_path:
