@@ -156,12 +156,12 @@ MIN_OFF_DISTANCE = 18.0  # Ångströms (NE2-NE2; was 25.0 for CA-CA)
 MAX_ON_DISTANCE = 12.0   # Ångströms — relaxed from 7.0 to catch near-hits for base-model eval
 MIN_IPTM_SCORE = 0.85
 MIN_AF2_IG_SCORE = 0.80
-# --- Evolution Loop Config ---
-MAX_GENERATIONS = 12
-VARIANTS_PER_GEN = 5
-STAGNATION_LIMIT = 4  # Abandon lineage after this many consecutive gens with no improvement
-POPULATION_SIZE = 3   # Top-K population to carry forward across generations
-TOURNAMENT_SIZE = 2   # Subset drawn for tournament selection of next parent
+# --- Evolution Loop Config (all overridable via env vars) ---
+MAX_GENERATIONS = int(os.environ.get("CASCADE_MAX_GENERATIONS", "12"))
+VARIANTS_PER_GEN = int(os.environ.get("CASCADE_VARIANTS_PER_GEN", "5"))
+STAGNATION_LIMIT = int(os.environ.get("CASCADE_STAGNATION_LIMIT", "4"))
+POPULATION_SIZE = int(os.environ.get("CASCADE_POPULATION_SIZE", "3"))
+TOURNAMENT_SIZE = int(os.environ.get("CASCADE_TOURNAMENT_SIZE", "2"))
 MISMATCH_COUNTS = (1, 2, 3)  # Test 1-, 2-, 3-mismatch off-targets; activity at higher count penalized harder
 SPECIFICITY_PENALTY_BASE = 0.3  # Base penalty; scaled by mismatch count (3mm > 2mm > 1mm)
 # --- Memory / OOM mitigation (seconds; set to 0 to disable) ---
@@ -1001,7 +1001,9 @@ class _DummyLock:
 
 def main_evolution_loop():
     log.info("Initializing SwitchBlade Active Learning Evolution Loop...")
-    log.info(f"Workers: {NUM_WORKERS} (set CASCADE_WORKERS env to change)")
+    log.info(f"Workers: {NUM_WORKERS} | Variants/gen: {VARIANTS_PER_GEN} | "
+             f"Generations: {MAX_GENERATIONS} | Population: {POPULATION_SIZE} | "
+             f"Stagnation limit: {STAGNATION_LIMIT}")
     os.makedirs(FAST_EVAL_DIR, exist_ok=True)
     os.makedirs(HIGH_FIDELITY_DIR, exist_ok=True)
     os.makedirs(GYM_DIR, exist_ok=True)
