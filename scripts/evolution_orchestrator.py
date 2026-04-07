@@ -572,24 +572,19 @@ def _evaluate_baseline_reference(baseline_id, baseline_fasta_path, crrna_lookup_
         )
 
         with gpu_lock:
-            off_pdb, _ = run_protenix_inference(
+            off_pdb, off_summary = run_protenix_inference(
                 off_json, fast_eval_dir, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
             )
         with gpu_lock:
-            on_pdb, _ = run_protenix_inference(
+            on_pdb, on_summary = run_protenix_inference(
                 on_json, fast_eval_dir, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
             )
 
         off_dist = calculate_hepn_shift(off_pdb, h1_idx, h2_idx)
         on_dist = calculate_hepn_shift(on_pdb, h1_idx, h2_idx)
 
-        mini_on_summary = None
-        try:
-            _, mini_on_summary = _find_mini_summary(fast_eval_dir, baseline_id, "ON")
-        except Exception:
-            pass
-        if mini_on_summary:
-            scores = extract_protenix_scores(mini_on_summary)
+        if on_summary:
+            scores = extract_protenix_scores(on_summary)
             iptm = scores["iptm"] if scores["iptm"] > 0.0 else 0.4
             af2_ig = scores["af2_ig"]
         else:
@@ -726,13 +721,13 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
 
                 try:
                     with gpu_lock:
-                        off_pdb, _ = run_protenix_inference(
+                        off_pdb, off_summary = run_protenix_inference(
                             off_json, fast_eval_dir, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
                         )
                     if SLEEP_AFTER_PROTENIX_MINI > 0:
                         time.sleep(SLEEP_AFTER_PROTENIX_MINI)
                     with gpu_lock:
-                        on_pdb, _ = run_protenix_inference(
+                        on_pdb, on_summary = run_protenix_inference(
                             on_json, fast_eval_dir, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
                         )
                     if SLEEP_AFTER_PROTENIX_MINI > 0:
@@ -762,13 +757,8 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
                 hf_pdb_path = None
                 true_on_dist = on_dist
 
-                mini_on_summary = None
-                try:
-                    _, mini_on_summary = _find_mini_summary(fast_eval_dir, variant_name, "ON")
-                except Exception:
-                    pass
-                if mini_on_summary:
-                    mini_scores = extract_protenix_scores(mini_on_summary)
+                if on_summary:
+                    mini_scores = extract_protenix_scores(on_summary)
                     iptm = mini_scores["iptm"] if mini_scores["iptm"] > 0.0 else 0.4
                     af2_ig = mini_scores["af2_ig"]
                 else:
@@ -811,7 +801,7 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
                         mm_str = " | ".join(f"{k}mm:{v:.1f}A" for k, v in sorted(offtarget_by_mismatch.items()))
                         log.info(f"{tag} [Specificity] {variant_name} | {mm_str}")
 
-                score_source = "base" if has_potential else ("mini" if mini_on_summary else "default")
+                score_source = "base" if has_potential else ("mini" if on_summary else "default")
                 fitness = compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None)
                 log.info(
                     f"{tag} [HEPN scored] {variant_name} OFF={off_dist:.1f}A ON={true_on_dist:.1f}A "
