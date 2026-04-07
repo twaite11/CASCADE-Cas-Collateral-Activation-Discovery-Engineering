@@ -1,5 +1,6 @@
 import os
 import json
+import multiprocessing
 import re
 import shutil
 import subprocess
@@ -8,6 +9,8 @@ import time
 import logging
 import importlib.util
 import numpy as np
+
+NUM_WORKERS = int(os.environ.get("CASCADE_WORKERS", "3"))
 
 
 def _flush_gpu_memory():
@@ -191,8 +194,10 @@ class EvolutionGym:
     the bias matrix contains actionable signal even when all absolute
     fitness values are deeply negative (e.g. early exploration).
     """
-    def __init__(self):
-        os.makedirs(GYM_DIR, exist_ok=True)
+    def __init__(self, worker_id=0):
+        self.worker_id = worker_id
+        self.gym_dir = os.path.join(GYM_DIR, f"worker_{worker_id}") if NUM_WORKERS > 1 else GYM_DIR
+        os.makedirs(self.gym_dir, exist_ok=True)
         self.mutation_weights = {}
         self.generation_history = []
         self.baseline_fitness = None
@@ -258,7 +263,7 @@ class EvolutionGym:
                         bias_matrix[pos] = {}
                     bias_matrix[pos][aa] = float(np.clip(weight, -5.0, 5.0))
             
-        bias_file = os.path.join(GYM_DIR, f"mpnn_bias_gen_{generation_num}.json")
+        bias_file = os.path.join(self.gym_dir, f"mpnn_bias_gen_{generation_num}.json")
         with open(bias_file, 'w') as f:
             json.dump(bias_matrix, f, indent=2)
         return bias_file
@@ -289,15 +294,14 @@ def _read_baseline_sequence(baseline_id, baseline_fasta_path):
 def save_rl_training_record(
     variant_id, variant_fasta, baseline_id, baseline_fasta_path, crrna_lookup_id,
     generation, mutations, fitness, off_dist, on_dist, iptm, af2_ig,
-    structure_path, offtarget_by_mismatch, is_elite,
+    structure_path, offtarget_by_mismatch, is_elite, rl_dataset_path=None,
 ):
     """
     Append a single variant evaluation to rl_training_dataset.jsonl.
     Format is designed for DRAKES/ProteinMPNN post-training: (structure, sequence, reward).
-    After post-training MPNN on this data, the fine-tuned model can be plugged back
-    into the CASCADE pipeline to bias future designs toward better Cas13 switches.
     """
-    os.makedirs(GYM_DIR, exist_ok=True)
+    dest = rl_dataset_path or RL_TRAINING_DATASET
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
     seq = _read_sequence_from_fasta(variant_fasta)
     baseline_seq = _read_baseline_sequence(baseline_id, baseline_fasta_path)
     record = {
@@ -317,7 +321,7 @@ def save_rl_training_record(
         "offtarget_by_mismatch": offtarget_by_mismatch or {},
         "is_elite": bool(is_elite),
     }
-    with open(RL_TRAINING_DATASET, "a", encoding="utf-8") as f:
+    with open(dest, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
@@ -520,13 +524,11 @@ def _resolve_best_baseline(best_name, best_fasta, best_hf_pdb, crrna_lookup_id, 
     return None
 
 
-def _evaluate_baseline_reference(baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata, gym):
+def _evaluate_baseline_reference(baseline_id, baseline_fasta_path, crrna_lookup_id,
+                                  domain_metadata, gpu_lock, fast_eval_dir):
     """
     Evaluate the unmodified baseline enzyme (Gen 0) to establish a reference
-    fitness. This gives the RL system a real zero-point: variants that improve
-    on the starting enzyme get positive relative weights, worse ones get negative.
-
-    Returns the baseline fitness, or None if evaluation fails.
+    fitness for the RL system.
     """
     log.info("=" * 60)
     log.info(f"Gen 0 — Evaluating unmodified baseline: {baseline_id}")
@@ -549,23 +551,24 @@ def _evaluate_baseline_reference(baseline_id, baseline_fasta_path, crrna_lookup_
             return None
 
         off_json, on_json = generate_evaluation_jsons(
-            tmp_fasta, baseline_id, METADATA_FILE, FAST_EVAL_DIR, crrna_lookup_id=crrna_lookup_id
+            tmp_fasta, baseline_id, METADATA_FILE, fast_eval_dir, crrna_lookup_id=crrna_lookup_id
         )
 
-        off_pdb, _ = run_protenix_inference(
-            off_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
-        )
-        on_pdb, _ = run_protenix_inference(
-            on_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
-        )
+        with gpu_lock:
+            off_pdb, _ = run_protenix_inference(
+                off_json, fast_eval_dir, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
+            )
+        with gpu_lock:
+            on_pdb, _ = run_protenix_inference(
+                on_json, fast_eval_dir, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
+            )
 
         off_dist = calculate_hepn_shift(off_pdb, h1_idx, h2_idx)
         on_dist = calculate_hepn_shift(on_pdb, h1_idx, h2_idx)
 
         mini_on_summary = None
         try:
-            base_name = os.path.basename(on_json).replace(".json", "")
-            _, mini_on_summary = _find_mini_summary(FAST_EVAL_DIR, baseline_id, "ON")
+            _, mini_on_summary = _find_mini_summary(fast_eval_dir, baseline_id, "ON")
         except Exception:
             pass
         if mini_on_summary:
@@ -592,14 +595,289 @@ def _evaluate_baseline_reference(baseline_id, baseline_fasta_path, crrna_lookup_
             pass
 
 
+def _run_single_lineage(worker_id, baselines, gpu_lock):
+    """
+    Run one or more lineages end-to-end. Fully self-contained with its own
+    EvolutionGym and output directories. The gpu_lock serializes Protenix
+    inference across parallel workers.
+
+    baselines: list of (baseline_id, pdb_path, fasta_path, crrna_lookup_id) tuples.
+    """
+    tag = f"[W{worker_id}]"
+    log.info(f"{tag} Starting worker with {len(baselines)} lineage(s)")
+
+    with open(METADATA_FILE, 'r') as f:
+        domain_metadata = json.load(f)
+
+    gym = EvolutionGym(worker_id=worker_id)
+
+    suffix = f"worker_{worker_id}" if NUM_WORKERS > 1 else ""
+    fast_eval_dir = os.path.join(FAST_EVAL_DIR, suffix) if suffix else FAST_EVAL_DIR
+    hf_dir = os.path.join(HIGH_FIDELITY_DIR, suffix) if suffix else HIGH_FIDELITY_DIR
+    gen_dir = os.path.join(GENERATION_DIR, suffix) if suffix else GENERATION_DIR
+    rl_dataset = os.path.join(gym.gym_dir, "rl_training_dataset.jsonl")
+    os.makedirs(fast_eval_dir, exist_ok=True)
+    os.makedirs(hf_dir, exist_ok=True)
+    os.makedirs(gen_dir, exist_ok=True)
+
+    mismatch_seqs = generate_mismatch_sequences(TARGET_REGION, mismatch_counts=MISMATCH_COUNTS, num_per_count=1, seed=42)
+
+    global_best = None
+    bias_file = None
+
+    for baseline in baselines:
+        baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id = baseline
+
+        # Gen 0: evaluate the unmodified baseline
+        baseline_ref_fitness = _evaluate_baseline_reference(
+            baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata, gpu_lock, fast_eval_dir,
+        )
+        if baseline_ref_fitness is not None:
+            gym.set_baseline_fitness(baseline_ref_fitness)
+
+        current_baseline = baseline
+
+        for generation_counter in range(1, MAX_GENERATIONS + 1):
+            bid, bpdb, bfasta, crrna_lid = current_baseline
+
+            log.info("=" * 60)
+            log.info(f"{tag} Generation {generation_counter} | Baseline: {bid}")
+            if global_best:
+                log.info(f"{tag}   Global best: {global_best[0]} (fitness={global_best[2]:.1f})")
+            log.info("=" * 60)
+
+            metadata_override = None
+            if bfasta:
+                metadata_override = build_metadata_override_for_evolved(bid, bfasta, crrna_lid, domain_metadata)
+                if not metadata_override:
+                    log.warning(f"{tag} Could not build metadata for evolved baseline {bid}. Skipping lineage.")
+                    break
+
+            try:
+                new_variants_fastas = pxdesign_wrapper.run_pxdesign_generation(
+                    baseline_structure=bpdb,
+                    variant_id=bid,
+                    metadata_path=METADATA_FILE,
+                    bias_json_path=bias_file,
+                    output_dir=os.path.join(gen_dir, f"gen_{generation_counter}"),
+                    variant_count=2,
+                    metadata_override=metadata_override,
+                    baseline_fasta_path=bfasta,
+                    base_json_dir=BASE_JSON_DIR,
+                    generation_num=generation_counter,
+                    lineage_seed=crrna_lid,
+                )
+            except Exception as e:
+                log.error(f"{tag} PXDesign failed: {e}. Skipping generation...")
+                continue
+
+            if SLEEP_AFTER_PXDESIGN > 0:
+                time.sleep(SLEEP_AFTER_PXDESIGN)
+            _flush_gpu_memory()
+
+            if not new_variants_fastas:
+                log.warning(f"{tag} No variants generated. Continuing...")
+                continue
+
+            results = []
+
+            for variant_fasta in new_variants_fastas:
+                mutations_made = extract_mutations(bid, variant_fasta, bfasta)
+                variant_name = os.path.basename(variant_fasta).replace(".fasta", "")
+
+                h1_idx, h2_idx = get_catalytic_histidine_indices(variant_fasta)
+                if h1_idx is None or h2_idx is None:
+                    continue
+
+                log.info(f"{tag} Evaluating {variant_name} (mini OFF/ON)...")
+                off_json, on_json = generate_evaluation_jsons(
+                    variant_fasta, bid, METADATA_FILE, fast_eval_dir, crrna_lookup_id=crrna_lid
+                )
+
+                try:
+                    with gpu_lock:
+                        off_pdb, _ = run_protenix_inference(
+                            off_json, fast_eval_dir, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
+                        )
+                    if SLEEP_AFTER_PROTENIX_MINI > 0:
+                        time.sleep(SLEEP_AFTER_PROTENIX_MINI)
+                    with gpu_lock:
+                        on_pdb, _ = run_protenix_inference(
+                            on_json, fast_eval_dir, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
+                        )
+                    if SLEEP_AFTER_PROTENIX_MINI > 0:
+                        time.sleep(SLEEP_AFTER_PROTENIX_MINI)
+                except Exception as e:
+                    log.warning(f"{tag} {EVAL_ENGINE} failed for {variant_name}: {e}")
+                    fitness = compute_fitness(0, 999, 0.4, 0, False, None)
+                    gym.register_evaluation(variant_name, mutations_made, 0, 999, 0.4, af2_ig_score=0.0, is_full_ternary=False)
+                    save_rl_training_record(
+                        variant_name, variant_fasta, bid, bfasta, crrna_lid,
+                        generation_counter, mutations_made, fitness, 0, 999, 0.4, 0.0,
+                        None, None, False, rl_dataset_path=rl_dataset,
+                    )
+                    results.append((variant_name, variant_fasta, fitness, 0, 999, 0.4, 0.0, None, None))
+                    continue
+
+                off_dist = calculate_hepn_shift(off_pdb, h1_idx, h2_idx)
+                on_dist = calculate_hepn_shift(on_pdb, h1_idx, h2_idx)
+
+                has_potential = (off_dist >= MIN_OFF_DISTANCE) and (on_dist <= MAX_ON_DISTANCE)
+                log.info(f"{tag} [HEPN mini] {variant_name} OFF={off_dist:.1f}A ON={on_dist:.1f}A delta={off_dist - on_dist:.1f}A")
+                log.info(f"{tag} [FilterGate] {variant_name} pass={has_potential} (OFF>={MIN_OFF_DISTANCE}A and ON<={MAX_ON_DISTANCE}A)")
+
+                offtarget_by_mismatch = {}
+                hf_pdb_path = None
+                true_on_dist = on_dist
+
+                mini_on_summary = None
+                try:
+                    _, mini_on_summary = _find_mini_summary(fast_eval_dir, variant_name, "ON")
+                except Exception:
+                    pass
+                if mini_on_summary:
+                    mini_scores = extract_protenix_scores(mini_on_summary)
+                    iptm = mini_scores["iptm"] if mini_scores["iptm"] > 0.0 else 0.4
+                    af2_ig = mini_scores["af2_ig"]
+                else:
+                    iptm, af2_ig = 0.4, 0.0
+
+                if has_potential:
+                    log.info(f"{tag} Filter passed. Running base ternary...")
+                    with gpu_lock:
+                        hf_pdb, hf_summary = run_protenix_inference(
+                            on_json, hf_dir, model_tier="base", seqres_db_path=SEQRES_DB_PATH
+                        )
+                    if SLEEP_AFTER_PROTENIX_BASE > 0:
+                        time.sleep(SLEEP_AFTER_PROTENIX_BASE)
+                    _flush_gpu_memory()
+                    true_on_dist = calculate_hepn_shift(hf_pdb, h1_idx, h2_idx)
+                    scores = extract_protenix_scores(hf_summary)
+                    iptm, af2_ig = scores["iptm"], scores["af2_ig"]
+                    hf_pdb_path = hf_pdb
+
+                    for i, (ot_rna, n_mismatch) in enumerate(mismatch_seqs):
+                        try:
+                            ot_json = generate_offtarget_json(
+                                variant_fasta, crrna_lid, METADATA_FILE, ot_rna, fast_eval_dir,
+                                suffix=f"{n_mismatch}mm_{i}"
+                            )
+                            with gpu_lock:
+                                ot_pdb, _ = run_protenix_inference(
+                                    ot_json, fast_eval_dir, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
+                                )
+                            if SLEEP_AFTER_PROTENIX_MINI > 0:
+                                time.sleep(SLEEP_AFTER_PROTENIX_MINI)
+                            ot_dist = calculate_hepn_shift(ot_pdb, h1_idx, h2_idx)
+                            if n_mismatch not in offtarget_by_mismatch:
+                                offtarget_by_mismatch[n_mismatch] = ot_dist
+                            else:
+                                offtarget_by_mismatch[n_mismatch] = min(offtarget_by_mismatch[n_mismatch], ot_dist)
+                        except Exception:
+                            offtarget_by_mismatch[n_mismatch] = MIN_OFF_DISTANCE
+                    if offtarget_by_mismatch:
+                        mm_str = " | ".join(f"{k}mm:{v:.1f}A" for k, v in sorted(offtarget_by_mismatch.items()))
+                        log.info(f"{tag} [Specificity] {variant_name} | {mm_str}")
+
+                score_source = "base" if has_potential else ("mini" if mini_on_summary else "default")
+                fitness = compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None)
+                log.info(
+                    f"{tag} [HEPN scored] {variant_name} OFF={off_dist:.1f}A ON={true_on_dist:.1f}A "
+                    f"delta={off_dist - true_on_dist:.1f}A iptm={iptm:.3f} af2_ig={af2_ig:.3f} "
+                    f"fitness={fitness:.2f} (scores from {score_source})"
+                )
+
+                if "fallback" in variant_name:
+                    fitness -= FALLBACK_FITNESS_PENALTY
+                gym.register_evaluation(
+                    variant_name, mutations_made, off_dist, true_on_dist, iptm,
+                    af2_ig_score=af2_ig, is_full_ternary=has_potential,
+                    offtarget_by_mismatch=offtarget_by_mismatch or None
+                )
+                struct_path = hf_pdb_path if hf_pdb_path else on_pdb
+                is_elite = (iptm >= MIN_IPTM_SCORE and af2_ig >= MIN_AF2_IG_SCORE and true_on_dist <= MAX_ON_DISTANCE)
+                save_rl_training_record(
+                    variant_name, variant_fasta, bid, bfasta, crrna_lid,
+                    generation_counter, mutations_made, fitness, off_dist, true_on_dist, iptm, af2_ig,
+                    struct_path, offtarget_by_mismatch or None, is_elite, rl_dataset_path=rl_dataset,
+                )
+                results.append((variant_name, variant_fasta, fitness, off_dist, true_on_dist, iptm, af2_ig, hf_pdb_path, offtarget_by_mismatch))
+                _flush_gpu_memory()
+
+            if not results:
+                log.warning(f"{tag} No valid results this generation. Continuing...")
+                continue
+
+            gen_best = max(results, key=lambda r: r[2])
+            gen_best_name, gen_best_fasta, gen_best_fitness, gen_best_off, gen_best_on, gen_best_iptm, gen_best_af2_ig, gen_best_hf_pdb, _ = gen_best
+            log.info(f"{tag} Generation best: {gen_best_name} (fitness={gen_best_fitness:.1f})")
+
+            if gen_best_iptm >= MIN_IPTM_SCORE and gen_best_af2_ig >= MIN_AF2_IG_SCORE and gen_best_on <= MAX_ON_DISTANCE:
+                log.info(f"{tag} ELITE TERNARY SWITCH FOUND!")
+                os.makedirs(FINAL_HITS_DIR, exist_ok=True)
+                shutil.copy(gen_best_fasta, os.path.join(FINAL_HITS_DIR, f"{gen_best_name}_optimal.fasta"))
+                if gen_best_hf_pdb:
+                    ext = os.path.splitext(gen_best_hf_pdb)[1] or ".pdb"
+                    shutil.copy(gen_best_hf_pdb, os.path.join(FINAL_HITS_DIR, f"{gen_best_name}_ternary_complex{ext}"))
+                save_crrna_for_elite(gen_best_name, crrna_lid, domain_metadata)
+
+            if global_best is None or gen_best_fitness > global_best[2]:
+                resolved = _resolve_best_baseline(gen_best_name, gen_best_fasta, gen_best_hf_pdb, crrna_lid, domain_metadata)
+                if resolved:
+                    global_best = (
+                        gen_best_name, resolved[2], gen_best_fitness,
+                        gen_best_off, gen_best_on, gen_best_iptm, gen_best_af2_ig,
+                        resolved[1], crrna_lid,
+                    )
+                    current_baseline = resolved
+                    log.info(f"{tag} NEW GLOBAL BEST: {gen_best_name} (fitness={gen_best_fitness:.1f})")
+                else:
+                    log.warning(f"{tag} Could not resolve structure for {gen_best_name}; reusing current baseline")
+            else:
+                log.info(f"{tag} Gen best ({gen_best_fitness:.1f}) < global best ({global_best[2]:.1f}); reverting")
+                current_baseline = (global_best[0], global_best[7], global_best[1], global_best[8])
+
+            gym.flush_generation()
+            if gym.mutation_weights:
+                bias_file = gym.generate_mpnn_bias_matrix(generation_counter)
+
+        log.info(f"{tag} Lineage {baseline_id} complete after {MAX_GENERATIONS} generations.")
+
+    log.info(f"{tag} Worker finished all {len(baselines)} lineage(s).")
+    return global_best
+
+
+def _aggregate_worker_results():
+    """Merge per-worker RL training datasets into one file."""
+    merged_path = RL_TRAINING_DATASET
+    os.makedirs(os.path.dirname(merged_path), exist_ok=True)
+    import glob as _glob
+    worker_files = sorted(_glob.glob(os.path.join(GYM_DIR, "worker_*", "rl_training_dataset.jsonl")))
+    if not worker_files:
+        return
+    with open(merged_path, "a", encoding="utf-8") as out:
+        for wf in worker_files:
+            with open(wf, encoding="utf-8") as inp:
+                for line in inp:
+                    out.write(line)
+    log.info(f"Merged {len(worker_files)} worker RL datasets into {merged_path}")
+
+
+class _DummyLock:
+    """No-op context manager for single-worker mode (avoids multiprocessing overhead)."""
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        pass
+
+
 def main_evolution_loop():
     log.info("Initializing SwitchBlade Active Learning Evolution Loop...")
+    log.info(f"Workers: {NUM_WORKERS} (set CASCADE_WORKERS env to change)")
     os.makedirs(FAST_EVAL_DIR, exist_ok=True)
     os.makedirs(HIGH_FIDELITY_DIR, exist_ok=True)
     os.makedirs(GYM_DIR, exist_ok=True)
     log.info(f"RL training data will be appended to {RL_TRAINING_DATASET} (see RL_TRAINING_FORMAT.md)")
-
-    gym = EvolutionGym()
 
     with open(METADATA_FILE, 'r') as f:
         domain_metadata = json.load(f)
@@ -612,275 +890,48 @@ def main_evolution_loop():
     else:
         log.info(f"Using all {len(baseline_ids)} baselines (not restricting by {VALIDATED_IDS_FILE})")
 
-    # Baseline object: (baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id)
-    lineage_queue = [
-        (bid, None, None, bid)  # Phase 1: fasta_path=None, crrna_lookup_id=baseline_id
-        for bid in baseline_ids
-    ]
-    log.info(f"Queue contains {len(lineage_queue)} lineages ({MAX_GENERATIONS} generations each)")
-    if not lineage_queue:
+    raw_queue = [(bid, None, None, bid) for bid in baseline_ids]
+    log.info(f"Queue contains {len(raw_queue)} lineages ({MAX_GENERATIONS} generations each)")
+    if not raw_queue:
         log.warning("No baselines in metadata. Exiting.")
         return
 
-    baseline, lineage_queue = _get_next_baseline_from_queue(lineage_queue)
-    if baseline is None:
+    resolved_baselines = []
+    remaining = list(raw_queue)
+    while remaining:
+        baseline, remaining = _get_next_baseline_from_queue(remaining)
+        if baseline is None:
+            break
+        resolved_baselines.append(baseline)
+
+    if not resolved_baselines:
         log.warning("No valid Phase 1 structures found for any baseline. Exiting.")
         return
 
-    bias_file = None
-    mismatch_seqs = generate_mismatch_sequences(TARGET_REGION, mismatch_counts=MISMATCH_COUNTS, num_per_count=1, seed=42)
+    log.info(f"Resolved {len(resolved_baselines)} baselines with Phase 1 structures")
 
-    # Tuple: (name, fasta_path, fitness, off, on, iptm, af2_ig, pdb_path, crrna_lookup_id)
-    global_best = None
+    n_workers = min(NUM_WORKERS, len(resolved_baselines))
 
-    while True:
-        # --- Gen 0: evaluate the unmodified baseline enzyme as a reference ---
-        baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id = baseline
-        baseline_ref_fitness = _evaluate_baseline_reference(
-            baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata, gym,
-        )
-        if baseline_ref_fitness is not None:
-            gym.set_baseline_fitness(baseline_ref_fitness)
-            if global_best is None or baseline_ref_fitness > global_best[2]:
-                log.info(f"Baseline {baseline_id} fitness={baseline_ref_fitness:.1f} — setting as initial global best")
-                resolved = _resolve_best_baseline(baseline_id, baseline_fasta_path, baseline_pdb_path, crrna_lookup_id, domain_metadata)
-                if resolved:
-                    global_best = (
-                        baseline_id, baseline_fasta_path, baseline_ref_fitness,
-                        0, 0, 0, 0, baseline_pdb_path, crrna_lookup_id,
-                    )
+    if n_workers <= 1:
+        log.info("Running single-worker mode")
+        gpu_lock = _DummyLock()
+        _run_single_lineage(0, resolved_baselines, gpu_lock)
+    else:
+        chunks = [resolved_baselines[i::n_workers] for i in range(n_workers)]
+        log.info(f"Distributing {len(resolved_baselines)} lineages across {n_workers} workers: "
+                 + ", ".join(f"W{i}={len(c)}" for i, c in enumerate(chunks)))
 
-        for generation_counter in range(1, MAX_GENERATIONS + 1):
-            baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id = baseline
+        gpu_lock = multiprocessing.Manager().Lock()
 
-            log.info("=" * 60)
-            log.info(f"Evolution Generation {generation_counter} | Baseline: {baseline_id}")
-            if global_best:
-                log.info(f"  Global best so far: {global_best[0]} (fitness={global_best[2]:.1f})")
-            log.info("=" * 60)
+        with multiprocessing.Pool(n_workers) as pool:
+            pool.starmap(_run_single_lineage, [
+                (i, chunks[i], gpu_lock) for i in range(n_workers)
+            ])
 
-            metadata_override = None
-            if baseline_fasta_path:
-                metadata_override = build_metadata_override_for_evolved(baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata)
-                if not metadata_override:
-                    log.warning(f"Could not build metadata for evolved baseline {baseline_id}. Skipping lineage.")
-                    break  # Break inner loop; outer loop handles next lineage
-
-            # --- SCRIPT 3: Generate Variants (Guided by the Gym) ---
-            try:
-                new_variants_fastas = pxdesign_wrapper.run_pxdesign_generation(
-                    baseline_structure=baseline_pdb_path,
-                    variant_id=baseline_id,
-                    metadata_path=METADATA_FILE,
-                    bias_json_path=bias_file,
-                    output_dir=os.path.join(GENERATION_DIR, f"gen_{generation_counter}"),
-                    variant_count=2,
-                    metadata_override=metadata_override,
-                    baseline_fasta_path=baseline_fasta_path,
-                    base_json_dir=BASE_JSON_DIR,
-                    generation_num=generation_counter,
-                    lineage_seed=crrna_lookup_id,
-                )
-            except Exception as e:
-                log.error(f"PXDesign failed: {e}. Skipping this generation...")
-                continue
-
-            if SLEEP_AFTER_PXDESIGN > 0:
-                time.sleep(SLEEP_AFTER_PXDESIGN)
-            _flush_gpu_memory()
-
-            if not new_variants_fastas:
-                log.warning("No variants generated this generation. Continuing...")
-                continue
-
-            results = []
-
-            for variant_fasta in new_variants_fastas:
-                mutations_made = extract_mutations(baseline_id, variant_fasta, baseline_fasta_path)
-                variant_name = os.path.basename(variant_fasta).replace(".fasta", "")
-
-                h1_idx, h2_idx = get_catalytic_histidine_indices(variant_fasta)
-                if h1_idx is None or h2_idx is None:
-                    continue
-
-                log.info(f"Evaluating variant {variant_name} ({EVAL_ENGINE} mini OFF/ON - may take 2-5 min each)...")
-                off_json, on_json = generate_evaluation_jsons(
-                    variant_fasta, baseline_id, METADATA_FILE, FAST_EVAL_DIR, crrna_lookup_id=crrna_lookup_id
-                )
-
-                try:
-                    off_pdb, _ = run_protenix_inference(
-                        off_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
-                    )
-                    if SLEEP_AFTER_PROTENIX_MINI > 0:
-                        time.sleep(SLEEP_AFTER_PROTENIX_MINI)
-                    on_pdb, _ = run_protenix_inference(
-                        on_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
-                    )
-                    if SLEEP_AFTER_PROTENIX_MINI > 0:
-                        time.sleep(SLEEP_AFTER_PROTENIX_MINI)
-                except Exception as e:
-                    log.warning(f"{EVAL_ENGINE} failed for {variant_name}: {e}")
-                    fitness = compute_fitness(0, 999, 0.4, 0, False, None)
-                    gym.register_evaluation(variant_name, mutations_made, 0, 999, 0.4, af2_ig_score=0.0, is_full_ternary=False, offtarget_by_mismatch=None)
-                    save_rl_training_record(
-                        variant_name, variant_fasta, baseline_id, baseline_fasta_path, crrna_lookup_id,
-                        generation_counter, mutations_made, fitness, 0, 999, 0.4, 0.0,
-                        None, None, False,
-                    )
-                    results.append((variant_name, variant_fasta, fitness, 0, 999, 0.4, 0.0, None, None))
-                    continue
-
-                off_dist = calculate_hepn_shift(off_pdb, h1_idx, h2_idx)
-                on_dist = calculate_hepn_shift(on_pdb, h1_idx, h2_idx)
-
-                has_potential = (off_dist >= MIN_OFF_DISTANCE) and (on_dist <= MAX_ON_DISTANCE)
-                log.info(
-                    f"[HEPN mini] {variant_name} OFF={off_dist:.1f}A ON={on_dist:.1f}A delta={off_dist - on_dist:.1f}A"
-                )
-                log.info(f"[FilterGate] {variant_name} pass={has_potential} (OFF>={MIN_OFF_DISTANCE}A and ON<={MAX_ON_DISTANCE}A)")
-
-                offtarget_by_mismatch = {}
-                hf_pdb_path = None
-                true_on_dist = on_dist
-
-                # Extract mini-model scores as baseline (avoids 0.4/0.0 defaults)
-                mini_on_summary = None
-                try:
-                    _, mini_on_summary = _find_mini_summary(FAST_EVAL_DIR, variant_name, "ON")
-                except Exception:
-                    pass
-                if mini_on_summary:
-                    mini_scores = extract_protenix_scores(mini_on_summary)
-                    iptm = mini_scores["iptm"] if mini_scores["iptm"] > 0.0 else 0.4
-                    af2_ig = mini_scores["af2_ig"]
-                else:
-                    iptm, af2_ig = 0.4, 0.0
-
-                if has_potential:
-                    log.info(f"Filter passed. Running {EVAL_ENGINE} base ternary (may take 10-30 min)...")
-
-                    hf_pdb, hf_summary = run_protenix_inference(
-                        on_json, HIGH_FIDELITY_DIR, model_tier="base", seqres_db_path=SEQRES_DB_PATH
-                    )
-                    if SLEEP_AFTER_PROTENIX_BASE > 0:
-                        time.sleep(SLEEP_AFTER_PROTENIX_BASE)
-                    _flush_gpu_memory()
-                    true_on_dist = calculate_hepn_shift(hf_pdb, h1_idx, h2_idx)
-                    scores = extract_protenix_scores(hf_summary)
-                    iptm, af2_ig = scores["iptm"], scores["af2_ig"]
-                    hf_pdb_path = hf_pdb
-
-                    # Specificity: 1-, 2-, 3-mismatch off-target tests; activity at higher count penalized harder
-                    for i, (ot_rna, n_mismatch) in enumerate(mismatch_seqs):
-                        try:
-                            ot_json = generate_offtarget_json(
-                                variant_fasta, crrna_lookup_id, METADATA_FILE, ot_rna, FAST_EVAL_DIR,
-                                suffix=f"{n_mismatch}mm_{i}"
-                            )
-                            ot_pdb, _ = run_protenix_inference(
-                                ot_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
-                            )
-                            if SLEEP_AFTER_PROTENIX_MINI > 0:
-                                time.sleep(SLEEP_AFTER_PROTENIX_MINI)
-                            ot_dist = calculate_hepn_shift(ot_pdb, h1_idx, h2_idx)
-                            if n_mismatch not in offtarget_by_mismatch:
-                                offtarget_by_mismatch[n_mismatch] = ot_dist
-                            else:
-                                offtarget_by_mismatch[n_mismatch] = min(offtarget_by_mismatch[n_mismatch], ot_dist)
-                        except Exception:
-                            offtarget_by_mismatch[n_mismatch] = MIN_OFF_DISTANCE  # Assume specific on failure
-                    if offtarget_by_mismatch:
-                        mm_str = " | ".join(f"{k}mm:{v:.1f}A" for k, v in sorted(offtarget_by_mismatch.items()))
-                        log.info(f"[Specificity] {variant_name} | {mm_str}")
-
-                score_source = "base" if has_potential else ("mini" if mini_on_summary else "default")
-                log.info(
-                    f"[HEPN scored] {variant_name} OFF={off_dist:.1f}A ON={true_on_dist:.1f}A "
-                    f"delta={off_dist - true_on_dist:.1f}A iptm={iptm:.3f} af2_ig={af2_ig:.3f} "
-                    f"fitness={compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None):.2f} "
-                    f"(scores from {score_source})"
-                )
-
-                fitness = compute_fitness(off_dist, true_on_dist, iptm, af2_ig, has_potential, offtarget_by_mismatch or None)
-                if "fallback" in variant_name:
-                    fitness -= FALLBACK_FITNESS_PENALTY
-                    log.info(f"Fallback variant {variant_name}: applying penalty ({FALLBACK_FITNESS_PENALTY})")
-                gym.register_evaluation(
-                    variant_name, mutations_made, off_dist, true_on_dist, iptm,
-                    af2_ig_score=af2_ig, is_full_ternary=has_potential,
-                    offtarget_by_mismatch=offtarget_by_mismatch or None
-                )
-                struct_path = hf_pdb_path if hf_pdb_path else on_pdb
-                is_elite = (iptm >= MIN_IPTM_SCORE and af2_ig >= MIN_AF2_IG_SCORE and true_on_dist <= MAX_ON_DISTANCE)
-                save_rl_training_record(
-                    variant_name, variant_fasta, baseline_id, baseline_fasta_path, crrna_lookup_id,
-                    generation_counter, mutations_made, fitness, off_dist, true_on_dist, iptm, af2_ig,
-                    struct_path, offtarget_by_mismatch or None, is_elite,
-                )
-                results.append((variant_name, variant_fasta, fitness, off_dist, true_on_dist, iptm, af2_ig, hf_pdb_path, offtarget_by_mismatch))
-                _flush_gpu_memory()
-
-            if not results:
-                log.warning("No valid results this generation. Continuing to next generation...")
-                continue
-
-            gen_best = max(results, key=lambda r: r[2])
-            gen_best_name, gen_best_fasta, gen_best_fitness, gen_best_off, gen_best_on, gen_best_iptm, gen_best_af2_ig, gen_best_hf_pdb, _ = gen_best
-
-            log.info(f"Generation best: {gen_best_name} (fitness={gen_best_fitness:.1f})")
-
-            if gen_best_iptm >= MIN_IPTM_SCORE and gen_best_af2_ig >= MIN_AF2_IG_SCORE and gen_best_on <= MAX_ON_DISTANCE:
-                log.info(f"ELITE TERNARY SWITCH FOUND! ipTM: {gen_best_iptm:.3f} | AF2-IG: {gen_best_af2_ig:.3f} | ON-Dist: {gen_best_on:.1f}A")
-                os.makedirs(FINAL_HITS_DIR, exist_ok=True)
-                shutil.copy(gen_best_fasta, os.path.join(FINAL_HITS_DIR, f"{gen_best_name}_optimal.fasta"))
-                if gen_best_hf_pdb:
-                    ext = os.path.splitext(gen_best_hf_pdb)[1] or ".pdb"
-                    shutil.copy(gen_best_hf_pdb, os.path.join(FINAL_HITS_DIR, f"{gen_best_name}_ternary_complex{ext}"))
-                save_crrna_for_elite(gen_best_name, crrna_lookup_id, domain_metadata)
-
-            # --- Global best tracking: always evolve from the best protein found so far ---
-            if global_best is None or gen_best_fitness > global_best[2]:
-                resolved = _resolve_best_baseline(
-                    gen_best_name, gen_best_fasta, gen_best_hf_pdb,
-                    crrna_lookup_id, domain_metadata
-                )
-                if resolved:
-                    global_best = (
-                        gen_best_name, resolved[2], gen_best_fitness,
-                        gen_best_off, gen_best_on, gen_best_iptm, gen_best_af2_ig,
-                        resolved[1], crrna_lookup_id,
-                    )
-                    baseline = resolved
-                    log.info(f"NEW GLOBAL BEST: {gen_best_name} (fitness={gen_best_fitness:.1f}) → next baseline")
-                else:
-                    # Could not resolve structure; keep using current generation's best as baseline
-                    log.warning(f"Could not resolve structure for global best {gen_best_name}; reusing current baseline")
-            else:
-                # Current generation didn't beat global best; revert to global best as baseline
-                log.info(f"Generation best ({gen_best_fitness:.1f}) did not beat global best ({global_best[2]:.1f}); reverting to global best")
-                baseline = (global_best[0], global_best[7], global_best[1], global_best[8])
-
-            # Flush relative-fitness weights and update bias matrix
-            gym.flush_generation()
-            if gym.mutation_weights:
-                bias_file = gym.generate_mpnn_bias_matrix(generation_counter)
-
-        # After MAX_GENERATIONS for this lineage, switch to next
-        if not lineage_queue:
-            break
-        log.info(f"Lineage complete after {MAX_GENERATIONS} generations. Switching to next baseline...")
-        next_baseline, lineage_queue = _get_next_baseline_from_queue(lineage_queue)
-        if next_baseline is None:
-            break
-        # If global best exists and has a structure, prefer it over the queue's baseline
-        if global_best:
-            log.info(f"Starting new lineage from global best: {global_best[0]} (fitness={global_best[2]:.1f})")
-            baseline = (global_best[0], global_best[7], global_best[1], global_best[8])
-        else:
-            baseline = next_baseline
+        _aggregate_worker_results()
 
     log.info("Evolution loop complete.")
+
 
 if __name__ == "__main__":
     main_evolution_loop()

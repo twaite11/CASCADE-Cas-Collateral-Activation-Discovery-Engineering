@@ -1,8 +1,12 @@
 """
-Unit tests for evolution_orchestrator: fitness, EvolutionGym, mutations, HEPN indices.
+Unit tests for evolution_orchestrator: fitness, EvolutionGym, mutations, HEPN indices,
+worker isolation, and GPU lock behavior.
 No GPU/Protenix/PXDesign. Mocks subprocess for run_protenix_inference.
 """
 import json
+import os
+import threading
+import time
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -28,6 +32,7 @@ EvolutionGym = orch.EvolutionGym
 get_catalytic_histidine_indices = orch.get_catalytic_histidine_indices
 extract_mutations = orch.extract_mutations
 build_metadata_override_for_evolved = orch.build_metadata_override_for_evolved
+_DummyLock = orch._DummyLock
 
 
 class TestComputeFitness:
@@ -179,3 +184,105 @@ class TestBuildMetadataOverride:
         meta = json.loads(Path(sample_metadata_json).read_text())
         override = build_metadata_override_for_evolved("bad", str(bad_fasta), "test_cas13", meta)
         assert override is None
+
+
+class TestWorkerIsolation:
+    """Test that EvolutionGym with different worker_ids creates isolated directories."""
+
+    def test_separate_gym_dirs(self, tmpdir, monkeypatch):
+        monkeypatch.setattr(orch, "GYM_DIR", str(tmpdir / "gym"))
+        monkeypatch.setattr(orch, "NUM_WORKERS", 3)
+        gyms = [EvolutionGym(worker_id=i) for i in range(3)]
+        dirs = [g.gym_dir for g in gyms]
+        assert len(set(dirs)) == 3, "Each worker should get a unique gym directory"
+        for d in dirs:
+            assert os.path.isdir(d)
+
+    def test_bias_files_isolated(self, tmpdir, monkeypatch):
+        monkeypatch.setattr(orch, "GYM_DIR", str(tmpdir / "gym"))
+        monkeypatch.setattr(orch, "NUM_WORKERS", 2)
+        g0 = EvolutionGym(worker_id=0)
+        g1 = EvolutionGym(worker_id=1)
+        g0.register_evaluation("v0", ["10_P"], 30, 10, 0.9, is_full_ternary=True)
+        g0.flush_generation()
+        g1.register_evaluation("v1", ["20_A"], 25, 12, 0.8, is_full_ternary=True)
+        g1.flush_generation()
+        bf0 = g0.generate_mpnn_bias_matrix(1)
+        bf1 = g1.generate_mpnn_bias_matrix(1)
+        assert bf0 != bf1, "Bias files should be in different directories"
+        assert os.path.isfile(bf0)
+        assert os.path.isfile(bf1)
+
+    def test_single_worker_uses_base_dir(self, tmpdir, monkeypatch):
+        monkeypatch.setattr(orch, "GYM_DIR", str(tmpdir / "gym"))
+        monkeypatch.setattr(orch, "NUM_WORKERS", 1)
+        g = EvolutionGym(worker_id=0)
+        assert g.gym_dir == str(tmpdir / "gym"), "Single-worker mode should use base GYM_DIR"
+
+
+class TestGpuLockBehavior:
+    """Test that the GPU lock serializes access correctly."""
+
+    def test_dummy_lock_is_reentrant(self):
+        lock = _DummyLock()
+        with lock:
+            with lock:
+                pass  # Should not deadlock
+
+    def test_dummy_lock_context_manager(self):
+        lock = _DummyLock()
+        with lock:
+            result = 42
+        assert result == 42
+
+    def test_lock_serializes_access(self):
+        """Verify a real threading lock prevents concurrent access."""
+        lock = threading.Lock()
+        concurrent_count = []
+        active = [0]
+
+        def worker():
+            with lock:
+                active[0] += 1
+                concurrent_count.append(active[0])
+                time.sleep(0.05)
+                active[0] -= 1
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert max(concurrent_count) == 1, "Lock should serialize to at most 1 concurrent entry"
+
+
+class TestAggregateResults:
+    """Test the aggregation of per-worker RL datasets."""
+
+    def test_merge_worker_datasets(self, tmpdir, monkeypatch):
+        monkeypatch.setattr(orch, "GYM_DIR", str(tmpdir / "gym"))
+        monkeypatch.setattr(orch, "RL_TRAINING_DATASET", str(tmpdir / "gym" / "rl_training_dataset.jsonl"))
+        w0 = tmpdir / "gym" / "worker_0"
+        w1 = tmpdir / "gym" / "worker_1"
+        w0.mkdir(parents=True)
+        w1.mkdir(parents=True)
+        (w0 / "rl_training_dataset.jsonl").write_text(
+            json.dumps({"variant_id": "v0", "fitness": 1.0}) + "\n"
+            + json.dumps({"variant_id": "v1", "fitness": 2.0}) + "\n"
+        )
+        (w1 / "rl_training_dataset.jsonl").write_text(
+            json.dumps({"variant_id": "v2", "fitness": 3.0}) + "\n"
+        )
+        orch._aggregate_worker_results()
+        merged = (tmpdir / "gym" / "rl_training_dataset.jsonl").read_text()
+        lines = [l for l in merged.strip().split("\n") if l]
+        assert len(lines) == 3
+        ids = [json.loads(l)["variant_id"] for l in lines]
+        assert set(ids) == {"v0", "v1", "v2"}
+
+    def test_noop_when_no_workers(self, tmpdir, monkeypatch):
+        monkeypatch.setattr(orch, "GYM_DIR", str(tmpdir / "gym"))
+        monkeypatch.setattr(orch, "RL_TRAINING_DATASET", str(tmpdir / "gym" / "rl_training_dataset.jsonl"))
+        (tmpdir / "gym").mkdir(parents=True, exist_ok=True)
+        orch._aggregate_worker_results()
+        assert not (tmpdir / "gym" / "rl_training_dataset.jsonl").exists()
