@@ -1,6 +1,7 @@
 import os
 import json
 import multiprocessing
+import random
 import re
 import shutil
 import subprocess
@@ -155,6 +156,8 @@ MIN_AF2_IG_SCORE = 0.80
 MAX_GENERATIONS = 12
 VARIANTS_PER_GEN = 5
 STAGNATION_LIMIT = 4  # Abandon lineage after this many consecutive gens with no improvement
+POPULATION_SIZE = 3   # Top-K population to carry forward across generations
+TOURNAMENT_SIZE = 2   # Subset drawn for tournament selection of next parent
 MISMATCH_COUNTS = (1, 2, 3)  # Test 1-, 2-, 3-mismatch off-targets; activity at higher count penalized harder
 SPECIFICITY_PENALTY_BASE = 0.3  # Base penalty; scaled by mismatch count (3mm > 2mm > 1mm)
 # --- Memory / OOM mitigation (seconds; set to 0 to disable) ---
@@ -186,6 +189,25 @@ def compute_fitness(off_dist, on_dist, iptm_score, af2_ig_score, is_full_ternary
                 penalty = SPECIFICITY_PENALTY_BASE * n_mismatch * (MIN_OFF_DISTANCE - min_dist)
                 fitness -= penalty
     return fitness
+
+
+def _update_population(population, new_results, max_size=POPULATION_SIZE):
+    """Merge new generation results into population, keep top-K by fitness.
+
+    Each entry is a dict with keys: name, fasta, fitness, off, on, iptm,
+    af2_ig, hf_pdb, crrna_lid, offtarget_by_mismatch.
+    """
+    combined = list(population) + list(new_results)
+    combined.sort(key=lambda x: x["fitness"], reverse=True)
+    return combined[:max_size]
+
+
+def _tournament_select(population, k=TOURNAMENT_SIZE):
+    """Pick a parent from population via tournament selection (fitness-proportionate pressure)."""
+    if len(population) <= 1:
+        return population[0] if population else None
+    contestants = random.sample(population, min(k, len(population)))
+    return max(contestants, key=lambda x: x["fitness"])
 
 
 class EvolutionGym:
@@ -615,7 +637,7 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
     os.makedirs(hf_dir, exist_ok=True)
     os.makedirs(gen_dir, exist_ok=True)
 
-    mismatch_seqs = generate_mismatch_sequences(TARGET_REGION, mismatch_counts=MISMATCH_COUNTS, num_per_count=1, seed=42)
+    mismatch_seqs = generate_mismatch_sequences(TARGET_REGION, mismatch_counts=MISMATCH_COUNTS, num_per_count=3, seed=42)
 
     global_best = None
     bias_file = None
@@ -631,14 +653,25 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
             gym.set_baseline_fitness(baseline_ref_fitness)
 
         current_baseline = baseline
+        population = []  # top-K pool of (dict) individuals carried across generations
         stagnation_counter = 0
         lineage_elite_found = False
 
         for generation_counter in range(1, MAX_GENERATIONS + 1):
-            bid, bpdb, bfasta, crrna_lid = current_baseline
+            # Tournament-select a parent from the population (falls back to current_baseline if empty)
+            if population:
+                parent = _tournament_select(population, k=TOURNAMENT_SIZE)
+                bid = parent["name"]
+                bpdb = parent.get("hf_pdb") or current_baseline[1]
+                bfasta = parent["fasta"]
+                crrna_lid = parent["crrna_lid"]
+            else:
+                bid, bpdb, bfasta, crrna_lid = current_baseline
 
             log.info("=" * 60)
-            log.info(f"{tag} Generation {generation_counter} | Baseline: {bid}")
+            log.info(f"{tag} Generation {generation_counter} | Parent: {bid}")
+            pop_summary = ", ".join(f"{p['name']}={p['fitness']:.1f}" for p in population[:3])
+            log.info(f"{tag}   Population[{len(population)}]: [{pop_summary}]")
             if global_best:
                 log.info(f"{tag}   Global best: {global_best[0]} (fitness={global_best[2]:.1f})")
             log.info("=" * 60)
@@ -713,7 +746,9 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
                         generation_counter, mutations_made, fitness, 0, 999, 0.4, 0.0,
                         None, None, False, rl_dataset_path=rl_dataset,
                     )
-                    results.append((variant_name, variant_fasta, fitness, 0, 999, 0.4, 0.0, None, None))
+                    results.append({"name": variant_name, "fasta": variant_fasta, "fitness": fitness,
+                                    "off": 0, "on": 999, "iptm": 0.4, "af2_ig": 0.0,
+                                    "hf_pdb": None, "crrna_lid": crrna_lid, "offtarget": None})
                     continue
 
                 off_dist = calculate_hepn_shift(off_pdb, h1_idx, h2_idx)
@@ -798,45 +833,55 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
                     generation_counter, mutations_made, fitness, off_dist, true_on_dist, iptm, af2_ig,
                     struct_path, offtarget_by_mismatch or None, is_elite, rl_dataset_path=rl_dataset,
                 )
-                results.append((variant_name, variant_fasta, fitness, off_dist, true_on_dist, iptm, af2_ig, hf_pdb_path, offtarget_by_mismatch))
+                results.append({"name": variant_name, "fasta": variant_fasta, "fitness": fitness,
+                                "off": off_dist, "on": true_on_dist, "iptm": iptm, "af2_ig": af2_ig,
+                                "hf_pdb": hf_pdb_path, "crrna_lid": crrna_lid, "offtarget": offtarget_by_mismatch})
                 _flush_gpu_memory()
 
             if not results:
                 log.warning(f"{tag} No valid results this generation. Continuing...")
                 continue
 
-            gen_best = max(results, key=lambda r: r[2])
-            gen_best_name, gen_best_fasta, gen_best_fitness, gen_best_off, gen_best_on, gen_best_iptm, gen_best_af2_ig, gen_best_hf_pdb, _ = gen_best
-            log.info(f"{tag} Generation best: {gen_best_name} (fitness={gen_best_fitness:.1f})")
+            gen_best = max(results, key=lambda r: r["fitness"])
+            log.info(f"{tag} Generation best: {gen_best['name']} (fitness={gen_best['fitness']:.1f})")
 
-            if gen_best_iptm >= MIN_IPTM_SCORE and gen_best_af2_ig >= MIN_AF2_IG_SCORE and gen_best_on <= MAX_ON_DISTANCE:
+            # --- Population update: merge new results into top-K pool ---
+            prev_best_fitness = population[0]["fitness"] if population else None
+            population = _update_population(population, results, max_size=POPULATION_SIZE)
+            log.info(f"{tag} Population after merge: "
+                     + ", ".join(f"{p['name']}={p['fitness']:.1f}" for p in population))
+
+            if gen_best["iptm"] >= MIN_IPTM_SCORE and gen_best["af2_ig"] >= MIN_AF2_IG_SCORE and gen_best["on"] <= MAX_ON_DISTANCE:
                 log.info(f"{tag} ELITE TERNARY SWITCH FOUND!")
                 os.makedirs(FINAL_HITS_DIR, exist_ok=True)
-                shutil.copy(gen_best_fasta, os.path.join(FINAL_HITS_DIR, f"{gen_best_name}_optimal.fasta"))
-                if gen_best_hf_pdb:
-                    ext = os.path.splitext(gen_best_hf_pdb)[1] or ".pdb"
-                    shutil.copy(gen_best_hf_pdb, os.path.join(FINAL_HITS_DIR, f"{gen_best_name}_ternary_complex{ext}"))
-                save_crrna_for_elite(gen_best_name, crrna_lid, domain_metadata)
+                shutil.copy(gen_best["fasta"], os.path.join(FINAL_HITS_DIR, f"{gen_best['name']}_optimal.fasta"))
+                if gen_best["hf_pdb"]:
+                    ext = os.path.splitext(gen_best["hf_pdb"])[1] or ".pdb"
+                    shutil.copy(gen_best["hf_pdb"], os.path.join(FINAL_HITS_DIR, f"{gen_best['name']}_ternary_complex{ext}"))
+                save_crrna_for_elite(gen_best["name"], crrna_lid, domain_metadata)
                 lineage_elite_found = True
 
-            if global_best is None or gen_best_fitness > global_best[2]:
-                resolved = _resolve_best_baseline(gen_best_name, gen_best_fasta, gen_best_hf_pdb, crrna_lid, domain_metadata)
+            # Update global best from the population leader
+            pop_leader = population[0]
+            if global_best is None or pop_leader["fitness"] > global_best[2]:
+                resolved = _resolve_best_baseline(
+                    pop_leader["name"], pop_leader["fasta"], pop_leader["hf_pdb"], crrna_lid, domain_metadata
+                )
                 if resolved:
                     global_best = (
-                        gen_best_name, resolved[2], gen_best_fitness,
-                        gen_best_off, gen_best_on, gen_best_iptm, gen_best_af2_ig,
+                        pop_leader["name"], resolved[2], pop_leader["fitness"],
+                        pop_leader["off"], pop_leader["on"], pop_leader["iptm"], pop_leader["af2_ig"],
                         resolved[1], crrna_lid,
                     )
                     current_baseline = resolved
-                    log.info(f"{tag} NEW GLOBAL BEST: {gen_best_name} (fitness={gen_best_fitness:.1f})")
-                    stagnation_counter = 0
-                else:
-                    log.warning(f"{tag} Could not resolve structure for {gen_best_name}; reusing current baseline")
-                    stagnation_counter += 1
-            else:
-                log.info(f"{tag} Gen best ({gen_best_fitness:.1f}) < global best ({global_best[2]:.1f}); reverting")
-                current_baseline = (global_best[0], global_best[7], global_best[1], global_best[8])
+                    log.info(f"{tag} NEW GLOBAL BEST: {pop_leader['name']} (fitness={pop_leader['fitness']:.1f})")
+
+            # Stagnation: check if the population leader improved
+            new_best_fitness = population[0]["fitness"]
+            if prev_best_fitness is not None and new_best_fitness <= prev_best_fitness:
                 stagnation_counter += 1
+            else:
+                stagnation_counter = 0
 
             gym.flush_generation()
             if gym.mutation_weights:

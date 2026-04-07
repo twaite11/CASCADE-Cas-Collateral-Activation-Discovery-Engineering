@@ -33,6 +33,8 @@ get_catalytic_histidine_indices = orch.get_catalytic_histidine_indices
 extract_mutations = orch.extract_mutations
 build_metadata_override_for_evolved = orch.build_metadata_override_for_evolved
 _DummyLock = orch._DummyLock
+_update_population = orch._update_population
+_tournament_select = orch._tournament_select
 
 
 class TestComputeFitness:
@@ -286,3 +288,66 @@ class TestAggregateResults:
         (tmpdir / "gym").mkdir(parents=True, exist_ok=True)
         orch._aggregate_worker_results()
         assert not (tmpdir / "gym" / "rl_training_dataset.jsonl").exists()
+
+
+def _make_individual(name, fitness, **kwargs):
+    """Helper to create a population individual dict for tests."""
+    d = {"name": name, "fasta": f"/tmp/{name}.fasta", "fitness": fitness,
+         "off": 30.0, "on": 10.0, "iptm": 0.8, "af2_ig": 0.7,
+         "hf_pdb": None, "crrna_lid": "test", "offtarget": None}
+    d.update(kwargs)
+    return d
+
+
+class TestPopulationManagement:
+    """Test _update_population merges and truncates correctly."""
+
+    def test_keeps_top_k(self):
+        pop = [_make_individual("a", 10.0), _make_individual("b", 5.0)]
+        new = [_make_individual("c", 15.0), _make_individual("d", 1.0)]
+        result = _update_population(pop, new, max_size=3)
+        assert len(result) == 3
+        assert result[0]["name"] == "c"
+        assert result[1]["name"] == "a"
+        assert result[2]["name"] == "b"
+
+    def test_empty_population_fills_from_results(self):
+        result = _update_population([], [_make_individual("x", 7.0)], max_size=3)
+        assert len(result) == 1
+        assert result[0]["name"] == "x"
+
+    def test_existing_population_not_displaced_by_worse(self):
+        pop = [_make_individual("a", 20.0), _make_individual("b", 15.0)]
+        new = [_make_individual("c", 1.0)]
+        result = _update_population(pop, new, max_size=2)
+        names = [r["name"] for r in result]
+        assert "c" not in names
+
+    def test_sorted_descending(self):
+        pop = [_make_individual("low", 1.0)]
+        new = [_make_individual("high", 100.0), _make_individual("mid", 50.0)]
+        result = _update_population(pop, new, max_size=5)
+        fitnesses = [r["fitness"] for r in result]
+        assert fitnesses == sorted(fitnesses, reverse=True)
+
+
+class TestTournamentSelection:
+    """Test _tournament_select picks from population with fitness pressure."""
+
+    def test_single_member(self):
+        pop = [_make_individual("only", 5.0)]
+        winner = _tournament_select(pop, k=2)
+        assert winner["name"] == "only"
+
+    def test_always_picks_best_when_k_equals_population(self):
+        pop = [_make_individual("best", 100.0), _make_individual("worst", 1.0)]
+        for _ in range(20):
+            winner = _tournament_select(pop, k=2)
+            assert winner["name"] == "best"
+
+    def test_returns_valid_member(self):
+        pop = [_make_individual(f"v{i}", float(i)) for i in range(5)]
+        names = {p["name"] for p in pop}
+        for _ in range(30):
+            winner = _tournament_select(pop, k=2)
+            assert winner["name"] in names
