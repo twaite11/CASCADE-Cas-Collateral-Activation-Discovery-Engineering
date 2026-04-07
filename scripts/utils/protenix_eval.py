@@ -42,11 +42,53 @@ EVAL_BIN, EVAL_ENGINE = _detect_eval_engine()
 log.info(f"CASCADE eval engine: {EVAL_ENGINE} ({EVAL_BIN})")
 _CATTLE_PROD_STRICT = os.environ.get("CATTLE_PROD_STRICT", "1").strip().lower() not in {"0", "false", "no"}
 
-# RNA Constants (Must match what we defined in 01_parse_and_annotate.py)
-DUMMY_SPACER_RNA = "GUCGACUGACGUACGUACGUACGU"
+# RNA Constants
+# Default dummy spacer for backward compatibility. Prefer loading real
+# fusion targets from data/fusion_targets.json via load_fusion_target().
 _RNA_COMPLEMENT = str.maketrans("AUGC", "UACG")
+
+_FUSION_TARGETS_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "fusion_targets.json")
+_loaded_target = None
+
+
+def _spacer_to_target(spacer_rna: str) -> str:
+    """Convert a 24nt spacer RNA to its target RNA (reverse complement + flanks)."""
+    rc = spacer_rna[::-1].translate(_RNA_COMPLEMENT)
+    return "AAAAAA" + rc + "AAAAAA"
+
+
+def load_fusion_target(target_id: str = None) -> tuple:
+    """Load a fusion target from data/fusion_targets.json.
+    Returns (spacer_rna, target_rna, target_info_dict).
+    Falls back to dummy if file missing or target not found."""
+    global _loaded_target
+    if _loaded_target and (target_id is None or _loaded_target[2].get("id") == target_id):
+        return _loaded_target
+
+    if os.path.exists(_FUSION_TARGETS_PATH):
+        try:
+            with open(_FUSION_TARGETS_PATH) as f:
+                data = json.load(f)
+            targets = {t["id"]: t for t in data.get("targets", [])}
+            tid = target_id or os.environ.get("CASCADE_FUSION_TARGET") or data.get("default_target_id")
+            if tid and tid in targets:
+                info = targets[tid]
+                spacer = info["spacer_rna"]
+                target = _spacer_to_target(spacer)
+                _loaded_target = (spacer, target, info)
+                log.info(f"Loaded fusion target: {info['fusion']} ({tid}) — {info['cancer']}")
+                return _loaded_target
+        except Exception as e:
+            log.warning(f"Could not load fusion targets: {e}")
+
+    spacer = "GUCGACUGACGUACGUACGUACGU"
+    target = _spacer_to_target(spacer)
+    _loaded_target = (spacer, target, {"id": "dummy", "fusion": "dummy", "cancer": "N/A"})
+    return _loaded_target
+
+
+DUMMY_SPACER_RNA, DUMMY_TARGET_RNA, _TARGET_INFO = load_fusion_target()
 TARGET_REGION = DUMMY_SPACER_RNA[::-1].translate(_RNA_COMPLEMENT)
-DUMMY_TARGET_RNA = "AAAAAA" + TARGET_REGION + "AAAAAA"
 
 
 def generate_offtarget_sequences(target_rna, num_scrambled=1, num_mismatch=1, seed=None):

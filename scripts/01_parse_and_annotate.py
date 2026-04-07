@@ -98,15 +98,37 @@ def load_files_to_db(conn):
                 
     # 2. Parse all CSVs and update metadata
     log.info("Streaming CSV metadata to SQLite...")
+
+    # If fix_crrna_assignments has produced a corrected report, use it
+    corrected_dr_path = os.path.join(os.path.dirname(__file__), "..", "outputs", "repeat_validation_report.csv")
+    corrected_drs = {}
+    if os.path.exists(corrected_dr_path):
+        try:
+            with open(corrected_dr_path, encoding="utf-8") as cf:
+                cr = csv.DictReader(cf)
+                for crow in cr:
+                    sid = crow.get("sequence_id", "")
+                    new_dr = crow.get("new_dr", "")
+                    if sid and new_dr:
+                        corrected_drs[sid] = new_dr
+            if corrected_drs:
+                log.info(f"Loaded {len(corrected_drs)} corrected crRNA DRs from {corrected_dr_path}")
+        except Exception:
+            pass
+
     for csv_file in csv_files:
         with open(csv_file, mode='r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 seq_id = row.get("sequence_id")
-                repeat_str = row.get("repeat_domains", "").split("|")[0]
                 sra_acc = row.get("sra_accession", "")
                 score = float(row.get("score", 0.0))
-                
+
+                if seq_id in corrected_drs:
+                    repeat_str = corrected_drs[seq_id]
+                else:
+                    repeat_str = row.get("repeat_domains", "").split("|")[0]
+
                 cursor.execute('''
                     UPDATE variants 
                     SET crrna_repeat = ?, sra_accession = ?, score = ?

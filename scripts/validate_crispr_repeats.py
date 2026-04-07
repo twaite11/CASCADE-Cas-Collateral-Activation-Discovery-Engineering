@@ -58,14 +58,44 @@ def is_low_complexity(seq: str, max_single_frac: float = 0.5) -> bool:
     return (most_common / len(seq)) > max_single_frac
 
 
+_TRNA_SEEDS = [
+    "GCGGGTGTAGCTCAG", "GGGCCCGTAGCTCAG", "GCGCCGCTGGTCTAG",
+    "GGAGCGTAGTTCAAT", "GCCGAAATAAGCGG", "GCCCGGATAGCTCAG",
+    "GGCCGGTTAGCTCAG", "GCGGGAGTGGCGAAA", "GGGGCTATAGCTCAG",
+    "GCCGCCGTAGCTCAG",
+]
+
+
+def is_trna_like(seq: str) -> bool:
+    """True if sequence matches known tRNA gene fragments.
+    tRNAs are 70-90bp, highly conserved, present in multiple copies per genome.
+    The naive k-mer miner confuses them with CRISPR DRs."""
+    seq_dna = seq.upper().replace("U", "T")
+    for seed in _TRNA_SEEDS:
+        if seed in seq_dna or seq_dna[:15] in seed:
+            return True
+    gc = (seq_dna.count("G") + seq_dna.count("C")) / max(len(seq_dna), 1)
+    if gc > 0.70 and len(seq_dna) >= 28:
+        if seq_dna.count("CAG") + seq_dna.count("CCA") >= 2:
+            return True
+    return False
+
+
 def select_best_repeat(k_mers: list) -> tuple:
-    """Pick best repeat from k-mers. Returns (chosen_seq, reason)."""
+    """Pick best repeat from k-mers. Returns (chosen_seq, reason).
+    Filters out tRNA-like sequences that the naive k-mer miner misidentifies."""
+    seen_seqs = set()
     candidates = []
     for k in k_mers:
         k = k.strip().replace("T", "U").replace("t", "u")
         if not k or len(k) < FALLBACK_MIN or len(k) > FALLBACK_MAX:
             continue
+        if k in seen_seqs:
+            continue
+        seen_seqs.add(k)
         if is_simple_tandem_repeat(k) or is_low_complexity(k):
+            continue
+        if is_trna_like(k):
             continue
         candidates.append(k)
 

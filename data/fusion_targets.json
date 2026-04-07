@@ -1,0 +1,54 @@
+{
+  "_comment": "Cancer-specific fusion RNA junction sequences for Cas13 targeting. Each entry has a 24nt spacer (guide) derived from the fusion junction, and the corresponding target RNA (reverse complement flanked by polyA). Source: high-specificity fusions from senary_bio_core matchmaker.",
+  "targets": [
+    {
+      "id": "BCR_ABL1_e13a2",
+      "fusion": "BCR-ABL1",
+      "cancer": "CML (Chronic Myeloid Leukemia)",
+      "junction_dna": "AGCTTCTCCCTGACATCCGTGGAGCTGCAGATGCTGACCAACTCGTGT",
+      "spacer_rna": "ACACGAGUUGGUCAGCAUCUGCAG",
+      "notes": "e13a2 (b2a2) breakpoint, most common BCR-ABL fusion"
+    },
+    {
+      "id": "EML4_ALK_v1",
+      "fusion": "EML4-ALK",
+      "cancer": "NSCLC (Non-Small Cell Lung Cancer)",
+      "junction_dna": "AAGGAATGGAATATCAAAGAAAAAGATGGTTGCCCAAATGCTGCACAG",
+      "spacer_rna": "CUGUGCAGCAUUUGGGCAACCAUC",
+      "notes": "Variant 1 (exon 13-exon 20), ~33% of EML4-ALK NSCLC"
+    },
+    {
+      "id": "TMPRSS2_ERG_T1E4",
+      "fusion": "TMPRSS2-ERG",
+      "cancer": "Prostate Cancer",
+      "junction_dna": "AATCAGGTCGGGAGGTGGAGATGCCAGCCAAGAGGTGGACCAGTCAGT",
+      "spacer_rna": "ACUGACUGGUCCACCUCUUGGCUG",
+      "notes": "T1:E4 fusion, most common (~50% of prostate cancers)"
+    },
+    {
+      "id": "EWSR1_FLI1",
+      "fusion": "EWSR1-FLI1",
+      "cancer": "Ewing Sarcoma",
+      "junction_dna": "ACTCCAAGTCAATATAGCCAACAGAGCAGCAGCTACGGGCAGCAGAAC",
+      "spacer_rna": "GUUCUGCUGCCCGUAGCUGCUGCU",
+      "notes": "Type 1 fusion (exon 7-exon 6), ~85% of Ewing sarcoma"
+    },
+    {
+      "id": "PML_RARA",
+      "fusion": "PML-RARA",
+      "cancer": "APL (Acute Promyelocytic Leukemia)",
+      "junction_dna": "AAGTGAGGTCTTCCTGCCCAACAGCAACCACGTGGACATCTGGGAGAT",
+      "spacer_rna": "AUCUCCCCAGAUGUCCACGUGGUU",
+      "notes": "bcr1 (long form), most common PML-RARA breakpoint"
+    },
+    {
+      "id": "FGFR3_TACC3",
+      "fusion": "FGFR3-TACC3",
+      "cancer": "Glioblastoma / Bladder Cancer",
+      "junction_dna": "CAGAAGATCGGCGTCATCACCATCGACAGCGCGGCCGTGGAAGTGACT",
+      "spacer_rna": "AGUCACUUCCACGGCCGCGCUGUC",
+      "notes": "Exon 17-exon 11, targetable with kinase inhibitors"
+    }
+  ],
+  "default_target_id": "BCR_ABL1_e13a2"
+}
