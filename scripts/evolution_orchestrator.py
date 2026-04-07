@@ -149,7 +149,7 @@ def _load_validated_baseline_ids():
 # NE2-NE2 is ~5-7 A shorter than the previous CA-CA metric.
 # OFF state: HEPN domains far apart (inactive). ON state: snap together (active).
 MIN_OFF_DISTANCE = 18.0  # Ångströms (NE2-NE2; was 25.0 for CA-CA)
-MAX_ON_DISTANCE = 7.0    # Ångströms (NE2-NE2; was 12.0 for CA-CA)
+MAX_ON_DISTANCE = 12.0   # Ångströms — relaxed from 7.0 to catch near-hits for base-model eval
 MIN_IPTM_SCORE = 0.85
 MIN_AF2_IG_SCORE = 0.80
 # --- Evolution Loop Config ---
