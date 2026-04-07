@@ -50,6 +50,48 @@ CRISPR_SPACER_MIN = 15
 CRISPR_SPACER_MAX = 80
 MIN_ARRAY_UNITS = 3
 
+_DNA_COMP = str.maketrans("ACGT", "TGCA")
+_RNA_COMP = str.maketrans("ACGU", "UGCA")
+
+
+def _reverse_complement_rna(rna_seq: str) -> str:
+    """Return the reverse complement of an RNA sequence."""
+    return rna_seq.upper().translate(_RNA_COMP)[::-1]
+
+
+def _pick_best_dr_orientation(rna_dr: str) -> str:
+    """Given an RNA DR, return whichever orientation (forward or reverse
+    complement) produces a better single-stem-loop typical of a CRISPR
+    direct repeat handle.
+
+    Cas13 DR handles fold into a single stem-loop with MFE typically in the
+    -3 to -12 kcal/mol range.  The correct orientation consistently produces
+    a cleaner, more stable stem-loop than the reverse complement."""
+    rc = _reverse_complement_rna(rna_dr)
+
+    try:
+        import RNA
+    except ImportError:
+        return rna_dr
+
+    def _stem_loop_score(seq: str) -> float:
+        structure, mfe = RNA.fold(seq)
+        if not structure or len(seq) == 0:
+            return -999.0
+        pairs = structure.count("(")
+        mfe_per_nt = mfe / len(seq)
+        in_range = -0.35 < mfe_per_nt < -0.05
+        return pairs * (1.0 if in_range else 0.3) + (0 if in_range else -50)
+
+    fwd_score = _stem_loop_score(rna_dr)
+    rc_score = _stem_loop_score(rc)
+
+    if rc_score > fwd_score:
+        log.debug(f"DR orientation flipped: {rna_dr[:15]}… → RC (fwd={fwd_score:.1f}, rc={rc_score:.1f})")
+        return rc
+    return rna_dr
+
+
 KNOWN_TRNA_SEEDS = [
     "GCGGGTGTAGCTCAG",
     "GGGCCCGTAGCTCAG",
@@ -175,8 +217,10 @@ def find_crispr_arrays(dna_seq: str, min_units: int = MIN_ARRAY_UNITS) -> list:
             if is_trna_like(rna_kmer):
                 continue
 
+            best_dr = _pick_best_dr_orientation(rna_kmer)
+
             arrays.append({
-                "consensus_repeat": rna_kmer,
+                "consensus_repeat": best_dr,
                 "repeat_positions": [(p, p + repeat_len) for p in cluster],
                 "spacers": spacers,
                 "array_start": cluster[0],
@@ -211,11 +255,29 @@ def _find_regular_cluster(positions: list, repeat_len: int) -> list | None:
     return best_cluster
 
 
+def _cas13_dr_length_bonus(dr_len: int) -> float:
+    """Score bonus for DR lengths matching known Cas13 subtypes.
+    Cas13a: 31-36nt, Cas13b: 36nt, Cas13d: ~30nt.
+    Returns 0-2 bonus points."""
+    if 28 <= dr_len <= 36:
+        return 2.0
+    if 23 <= dr_len <= 27:
+        return 0.5
+    return 0.0
+
+
+def _array_sort_key(arr: dict) -> float:
+    """Composite score for ranking CRISPR arrays: n_repeats + DR length bonus."""
+    dr_len = len(arr.get("consensus_repeat", ""))
+    return arr["n_repeats"] + _cas13_dr_length_bonus(dr_len)
+
+
 def _deduplicate_arrays(arrays: list) -> list:
-    """Remove overlapping arrays, keeping the one with most repeats."""
+    """Remove overlapping arrays, keeping the one with highest composite score
+    (repeat count + Cas13 DR length preference)."""
     if not arrays:
         return []
-    arrays.sort(key=lambda a: a["n_repeats"], reverse=True)
+    arrays.sort(key=_array_sort_key, reverse=True)
     kept = []
     used_ranges = []
     for arr in arrays:
@@ -307,7 +369,7 @@ def reassign_crrna_for_baselines(offline: bool = False):
         rejection_reason = ""
 
         if accession in accession_arrays and accession_arrays[accession]:
-            best_array = max(accession_arrays[accession], key=lambda a: a["n_repeats"])
+            best_array = max(accession_arrays[accession], key=_array_sort_key)
             new_dr = best_array["consensus_repeat"]
             source = f"crispr_array_{best_array['n_repeats']}x"
         elif not offline and accession in accession_arrays:
@@ -378,9 +440,8 @@ def _salvage_from_old_kmers(kmers: list) -> str | None:
     if not candidates:
         return None
     preferred = [c for c in candidates if 28 <= len(c) <= 36]
-    if preferred:
-        return preferred[0]
-    return candidates[0]
+    chosen = preferred[0] if preferred else candidates[0]
+    return _pick_best_dr_orientation(chosen)
 
 
 def _update_metadata_json(report_rows: list):
