@@ -170,12 +170,43 @@ def load_rl_dataset():
     return records
 
 
-def infer_baseline_id(fasta_path):
-    """Try to figure out which baseline a variant came from based on directory structure."""
+def _build_lineage_map():
+    """Build a mapping from lineage hash prefix (e.g. 'L08c120') to baseline ID.
+
+    Scans PXDesign YAML filenames and generation directories to find the
+    original baseline ID associated with each compact lineage tag.
+    """
+    tag_to_bid = {}
+    # Method 1: PXDesign YAMLs are named {baseline_id}_pxdesign_input.yaml
+    for yml in glob.glob(os.path.join(GEN_DIR, "**", "*_pxdesign_input.yaml"), recursive=True):
+        basename = os.path.basename(yml).replace("_pxdesign_input.yaml", "")
+        # The lineage tag is derived from the crRNA lookup ID (which is the baseline ID for initial runs)
+        import hashlib
+        digest = hashlib.sha1(basename.encode("utf-8")).hexdigest()[:6]
+        tag = f"L{digest}"
+        tag_to_bid[tag] = basename
+    # Method 2: directories named after the baseline ID inside gen dirs
+    for d in glob.glob(os.path.join(GEN_DIR, "**", "3174*"), recursive=True):
+        if os.path.isdir(d):
+            basename = os.path.basename(d)
+            import hashlib
+            digest = hashlib.sha1(basename.encode("utf-8")).hexdigest()[:6]
+            tag_to_bid[f"L{digest}"] = basename
+    return tag_to_bid
+
+
+def infer_baseline_id(fasta_path, lineage_map=None):
+    """Try to figure out which baseline a variant came from."""
     parts = fasta_path.replace("\\", "/").split("/")
+    # Direct match: directory contains the baseline ID
     for p in parts:
         if "ORF_Score" in p:
             return p
+    # Reverse-map from lineage tag in the filename
+    name = os.path.basename(fasta_path).replace(".fasta", "")
+    lineage_tag = name.split("_")[0]  # e.g. 'L08c120'
+    if lineage_map and lineage_tag in lineage_map:
+        return lineage_map[lineage_tag]
     return None
 
 
@@ -185,6 +216,8 @@ def print_report(baseline_cache, rl_data):
     if not fastas:
         print("\n  No variant FASTAs found yet. Waiting for the orchestrator to generate designs...\n")
         return
+
+    lineage_map = _build_lineage_map()
 
     # Group by generation
     by_gen = defaultdict(list)
@@ -217,7 +250,7 @@ def print_report(baseline_cache, rl_data):
                 continue
 
             # Try to find the baseline
-            baseline_id = infer_baseline_id(fp)
+            baseline_id = infer_baseline_id(fp, lineage_map)
             if baseline_id and baseline_id not in baseline_cache:
                 seq = get_baseline_seq(baseline_id)
                 coords = get_domain_coords(baseline_id)
