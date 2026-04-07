@@ -595,7 +595,11 @@ def _evaluate_baseline_reference(baseline_id, baseline_fasta_path, crrna_lookup_
             f"[Gen 0] Baseline {baseline_id}: OFF={off_dist:.1f}A ON={on_dist:.1f}A "
             f"delta={off_dist - on_dist:.1f}A iptm={iptm:.3f} fitness={fitness:.2f}"
         )
-        return fitness
+        return {
+            "name": baseline_id, "fasta": baseline_fasta_path, "fitness": fitness,
+            "off": off_dist, "on": on_dist, "iptm": iptm, "af2_ig": af2_ig,
+            "hf_pdb": None, "crrna_lid": crrna_lookup_id, "offtarget": None,
+        }
 
     except Exception as e:
         log.warning(f"Baseline evaluation failed for {baseline_id}: {e}")
@@ -641,14 +645,15 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
         baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id = baseline
 
         # Gen 0: evaluate the unmodified baseline
-        baseline_ref_fitness = _evaluate_baseline_reference(
+        baseline_result = _evaluate_baseline_reference(
             baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata, gpu_lock, fast_eval_dir,
         )
-        if baseline_ref_fitness is not None:
-            gym.set_baseline_fitness(baseline_ref_fitness)
+        if baseline_result is not None:
+            gym.set_baseline_fitness(baseline_result["fitness"])
 
         current_baseline = baseline
-        population = []  # top-K pool of (dict) individuals carried across generations
+        # Seed population with the baseline so variants must beat it to survive
+        population = [baseline_result] if baseline_result is not None else []
         stagnation_counter = 0
         lineage_elite_found = False
 
