@@ -649,16 +649,33 @@ def _apply_bias_to_sequence(full_seq: str, bias_json_path: str, coords: dict) ->
 
 
 def _sequence_from_fasta_or_json(fasta_path: str, json_path: str, variant_id: str) -> str:
-    """Get baseline sequence from FASTA or base JSON."""
+    """Get baseline sequence from FASTA or base JSON.
+
+    Searches multiple candidate JSON paths in case the base_json_dir doesn't
+    align with the actual jsons/ directory on this machine.
+    """
     if fasta_path and os.path.exists(fasta_path):
         with open(fasta_path) as f:
             return "".join(l.strip() for l in f if not l.startswith(">"))
-    if os.path.exists(json_path):
-        with open(json_path) as f:
-            data = json.load(f)
-        ent = data[0]["sequences"][0]
-        prot = ent.get("proteinChain", ent.get("protein", {}))
-        return prot.get("sequence", "")
+
+    candidates = [json_path]
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.join(scripts_dir, "..", "jsons", f"{variant_id}.json"))
+    candidates.append(os.path.join(scripts_dir, "..", "outputs", "jsons", f"{variant_id}.json"))
+
+    for path in candidates:
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            ent = data[0]["sequences"][0]
+            prot = ent.get("proteinChain", ent.get("protein", {}))
+            seq = prot.get("sequence", "")
+            if seq:
+                return seq
+        except (json.JSONDecodeError, KeyError, IndexError):
+            continue
     return ""
 
 
@@ -777,8 +794,13 @@ def run_pxdesign_generation(
     full_seq = _sequence_from_fasta_or_json(baseline_fasta_path, base_json, variant_id)
     if not full_seq:
         full_seq = _sequence_from_structure(baseline_structure)
-    if len(full_seq) < coords["hepn2_end"]:
-        log.warning(f"Baseline sequence shorter than HEPN2 end; stitching may fail")
+    if not full_seq:
+        log.warning("Could not read baseline sequence from any source")
+    seq_deficit = coords["hepn2_end"] - len(full_seq)
+    if seq_deficit > 0:
+        log.warning(f"Baseline sequence ({len(full_seq)} aa) shorter than HEPN2 end ({coords['hepn2_end']}); "
+                     f"padding {seq_deficit} residues with Glycine")
+        full_seq += "G" * seq_deficit
 
     abs_out = os.path.abspath(output_dir)
     name_seed = lineage_seed or variant_id
