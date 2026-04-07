@@ -24,9 +24,20 @@ DB_FILE = "../metadata/cas13_variants.db"
 JSON_OUT_DIR = "../jsons"
 METADATA_OUT_FILE = "../metadata/variant_domain_metadata.json"
 
-# RNA Constants
-DUMMY_SPACER_RNA = "GUCGACUGACGUACGUACGUACGU" # 24nt
-DUMMY_TARGET_RNA = "AAAAAA" + "ACGUACGUACGUACGUCAGUCGAC" + "AAAAAA" # Simulates tumor fusion RNA
+# RNA Constants — use the subtype-aware helpers from protenix_eval when available,
+# but keep these defaults for standalone use.
+DUMMY_SPACER_RNA = "GUCGACUGACGUACGUACGUACGU" # 24nt fallback
+DUMMY_TARGET_RNA = "AAAAAA" + "ACGUACGUACGUACGUCAGUCGAC" + "AAAAAA"
+
+try:
+    from utils.protenix_eval import (
+        assemble_crrna as _assemble_crrna,
+        get_spacer_for_subtype as _get_spacer,
+        get_target_for_spacer as _get_target,
+    )
+    _HAS_CRRNA_HELPERS = True
+except ImportError:
+    _HAS_CRRNA_HELPERS = False
 BATCH_SIZE = 1000  # Number of sequences to hold in memory at once
 
 def init_db():
@@ -262,7 +273,15 @@ def generate_protenix_jsons(conn):
             
             # Convert DNA repeat to RNA
             dr_rna = dna_repeat.replace("T", "U").replace("t", "u")
-            crrna_seq = dr_rna + DUMMY_SPACER_RNA
+
+            subtype = "unknown"
+            if _HAS_CRRNA_HELPERS:
+                spacer = _get_spacer(subtype)
+                target_rna = _get_target(spacer)
+                crrna_seq = _assemble_crrna(dr_rna, spacer, subtype)
+            else:
+                crrna_seq = dr_rna + DUMMY_SPACER_RNA
+                target_rna = DUMMY_TARGET_RNA
             
             # Protenix expects proteinChain/rnaSequence (not protein/rna)
             protenix_payload = [
@@ -271,7 +290,7 @@ def generate_protenix_jsons(conn):
                     "sequences": [
                         {"proteinChain": {"sequence": protein_seq, "count": 1}},
                         {"rnaSequence": {"sequence": crrna_seq, "count": 1}},
-                        {"rnaSequence": {"sequence": DUMMY_TARGET_RNA, "count": 1}}
+                        {"rnaSequence": {"sequence": target_rna, "count": 1}}
                     ]
                 }
             ]
@@ -288,7 +307,8 @@ def generate_protenix_jsons(conn):
                     "HEPN1": {"start": h1_start, "end": h1_end},
                     "HEPN2": {"start": h2_start, "end": h2_end}
                 },
-                "crRNA_repeat_used": dr_rna
+                "crRNA_repeat_used": dr_rna,
+                "subtype": "unknown",
             }
             generated_count += 1
 

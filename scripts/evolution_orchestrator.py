@@ -50,6 +50,8 @@ from utils.protenix_eval import (
     TARGET_REGION,
     DUMMY_SPACER_RNA,
     EVAL_ENGINE,
+    assemble_crrna,
+    get_spacer_for_subtype,
 )
 from utils.pdb_kinematics import calculate_hepn_shift, extract_protenix_scores, find_structure_files
 
@@ -370,6 +372,7 @@ def build_metadata_override_for_evolved(baseline_id, baseline_fasta_path, crrna_
                 "HEPN2": {"start": max(hepn1_center + 80, hepn2_center - 30), "end": hepn2_center + 80},
             },
             "crRNA_repeat_used": parent_data["crRNA_repeat_used"],
+            "subtype": parent_data.get("subtype", "unknown"),
         }
     }
 
@@ -379,7 +382,9 @@ def save_crrna_for_elite(variant_name, crrna_lookup_id, domain_metadata):
     parent = domain_metadata.get(crrna_lookup_id)
     if not parent:
         return
-    crrna_seq = parent["crRNA_repeat_used"] + DUMMY_SPACER_RNA
+    subtype = parent.get("subtype", "unknown")
+    spacer = get_spacer_for_subtype(subtype)
+    crrna_seq = assemble_crrna(parent["crRNA_repeat_used"], spacer, subtype)
     os.makedirs(FINAL_HITS_DIR, exist_ok=True)
     crrna_path = os.path.join(FINAL_HITS_DIR, f"{variant_name}_crRNA.fasta")
     with open(crrna_path, 'w') as f:

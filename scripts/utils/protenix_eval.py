@@ -90,6 +90,56 @@ def load_fusion_target(target_id: str = None) -> tuple:
 DUMMY_SPACER_RNA, DUMMY_TARGET_RNA, _TARGET_INFO = load_fusion_target()
 TARGET_REGION = DUMMY_SPACER_RNA[::-1].translate(_RNA_COMPLEMENT)
 
+# Optimal spacer lengths per Cas13 subtype (from literature)
+_SUBTYPE_SPACER_LEN = {
+    "cas13a": 28,
+    "cas13b": 30,
+    "cas13d": 23,
+}
+_DEFAULT_SPACER_LEN = 24
+
+
+def get_spacer_for_subtype(subtype: str = "unknown") -> str:
+    """Return the spacer RNA at the optimal length for a given Cas13 subtype.
+    Extends or trims the default spacer using the junction context in
+    fusion_targets.json to match the subtype's preferred spacer length."""
+    desired_len = _SUBTYPE_SPACER_LEN.get(subtype, _DEFAULT_SPACER_LEN)
+    base_spacer = DUMMY_SPACER_RNA
+
+    if desired_len == len(base_spacer):
+        return base_spacer
+
+    info = _TARGET_INFO
+    junction_dna = info.get("junction_dna", "")
+    if not junction_dna:
+        return base_spacer
+
+    junction_rna = junction_dna.upper().replace("T", "U")
+    rc_junction = junction_rna[::-1].translate(_RNA_COMPLEMENT)
+
+    if desired_len > len(base_spacer) and len(rc_junction) >= desired_len:
+        return rc_junction[:desired_len]
+    elif desired_len < len(base_spacer):
+        return base_spacer[:desired_len]
+    return base_spacer
+
+
+def get_target_for_spacer(spacer_rna: str) -> str:
+    """Build the target RNA (reverse complement + polyA flanks) for a given spacer."""
+    return _spacer_to_target(spacer_rna)
+
+
+def assemble_crrna(dr: str, spacer: str, subtype: str = "unknown") -> str:
+    """Assemble the mature crRNA from direct repeat and spacer, respecting
+    the subtype-specific orientation:
+      - Cas13a/d/X/Y and unknown: 5'-DR-spacer-3'
+      - Cas13b:                   5'-spacer-DR-3'
+    """
+    subtype_lower = (subtype or "unknown").lower()
+    if subtype_lower == "cas13b":
+        return spacer + dr
+    return dr + spacer
+
 
 def generate_offtarget_sequences(target_rna, num_scrambled=1, num_mismatch=1, seed=None):
     """
@@ -154,7 +204,9 @@ def generate_offtarget_json(variant_fasta, crrna_lookup_id, metadata_path, off_t
     baseline_data = metadata.get(crrna_lookup_id)
     if not baseline_data:
         raise ValueError(f"crRNA lookup ID {crrna_lookup_id} not found in metadata.")
-    crrna_seq = baseline_data["crRNA_repeat_used"] + DUMMY_SPACER_RNA
+    subtype = baseline_data.get("subtype", "unknown")
+    spacer = get_spacer_for_subtype(subtype)
+    crrna_seq = assemble_crrna(baseline_data["crRNA_repeat_used"], spacer, subtype)
     # Protenix expects proteinChain/rnaSequence (not protein/rna)
     payload = [{
         "name": f"{variant_id}_offtarget_{suffix}",
@@ -195,7 +247,10 @@ def generate_evaluation_jsons(variant_fasta, baseline_id, metadata_path, out_dir
     if not baseline_data:
         raise ValueError(f"crRNA lookup ID {lookup_id} not found in metadata.")
 
-    crrna_seq = baseline_data["crRNA_repeat_used"] + DUMMY_SPACER_RNA
+    subtype = baseline_data.get("subtype", "unknown")
+    spacer = get_spacer_for_subtype(subtype)
+    target_rna = get_target_for_spacer(spacer)
+    crrna_seq = assemble_crrna(baseline_data["crRNA_repeat_used"], spacer, subtype)
     
     # 3. Construct OFF State Payload (Dormant - No Target)
     # Protenix expects proteinChain/rnaSequence (not protein/rna)
@@ -213,7 +268,7 @@ def generate_evaluation_jsons(variant_fasta, baseline_id, metadata_path, out_dir
         "sequences": [
             {"proteinChain": {"sequence": protein_seq, "count": 1}},
             {"rnaSequence": {"sequence": crrna_seq, "count": 1}},
-            {"rnaSequence": {"sequence": DUMMY_TARGET_RNA, "count": 1}}
+            {"rnaSequence": {"sequence": target_rna, "count": 1}}
         ]
     }]
     

@@ -1,5 +1,5 @@
 {
-  "_comment": "Cancer-specific fusion RNA junction sequences for Cas13 targeting. Each entry has a 24nt spacer (guide) derived from the fusion junction, and the corresponding target RNA (reverse complement flanked by polyA). Source: high-specificity fusions from senary_bio_core matchmaker.",
+  "_comment": "Cancer-specific fusion RNA junction sequences for Cas13 targeting. Each entry has a default 24nt spacer (guide) derived from the 3' end of the fusion junction. Longer spacers (28nt for Cas13a, 30nt for Cas13b, 23nt for Cas13d) are computed dynamically at runtime by get_spacer_for_subtype() in protenix_eval.py using junction_dna. Source: high-specificity fusions from senary_bio_core matchmaker.",
   "targets": [
     {
       "id": "BCR_ABL1_e13a2",
