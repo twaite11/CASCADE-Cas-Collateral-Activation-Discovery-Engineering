@@ -441,11 +441,17 @@ def _run_mpnn_refinement(
         # MPNN fixed_positions_jsonl: {pdb_name: {chain: [1-based int positions]}}
         # Fixed = all positions NOT in designable set. Positions are 1-based
         # relative to the chain as parsed by MPNN.
-        # Chain B has 290 residues (the binder); find which to fix.
-        binder_len = 290  # from CIF inspection
+        from Bio.PDB import PDBParser as _PDBParser
+        _pdb_struct = _PDBParser(QUIET=True).get_structure("b", pdb_path)
+        _chains = {c.id: sum(1 for r in c.get_residues() if r.id[0] == ' ')
+                   for c in _pdb_struct[0].get_chains()}
+        binder_len = _chains.get("B", coords["binder_length"])
+        chain_a_len = _chains.get("A", 0)
+
+        fixed_in_A = list(range(1, chain_a_len + 1))
         fixed_in_B = [p - rec_end + 1 for p in range(rec_end, rec_end + binder_len)
                       if p not in designable_positions]
-        fixed_positions = {"backbone": {"A": [1], "B": fixed_in_B}}
+        fixed_positions = {"backbone": {"A": fixed_in_A, "B": fixed_in_B}}
         fixed_pos_path = os.path.join(tmp, "fixed_positions.jsonl")
         with open(fixed_pos_path, "w") as f:
             f.write(json.dumps(fixed_positions) + "\n")

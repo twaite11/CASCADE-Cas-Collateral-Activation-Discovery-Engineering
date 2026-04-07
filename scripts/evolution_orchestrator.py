@@ -141,9 +141,11 @@ def _load_validated_baseline_ids():
     return ids
 
 # --- Biophysical Thresholds ---
-# The R(phi)X3H motifs must be far apart in the OFF state, and snap together in the ON state.
-MIN_OFF_DISTANCE = 25.0  # Ångströms
-MAX_ON_DISTANCE = 12.0   # Ångströms
+# Distance between catalytic His NE2 atoms (side-chain measurement).
+# NE2-NE2 is ~5-7 A shorter than the previous CA-CA metric.
+# OFF state: HEPN domains far apart (inactive). ON state: snap together (active).
+MIN_OFF_DISTANCE = 18.0  # Ångströms (NE2-NE2; was 25.0 for CA-CA)
+MAX_ON_DISTANCE = 7.0    # Ångströms (NE2-NE2; was 12.0 for CA-CA)
 MIN_IPTM_SCORE = 0.85
 MIN_AF2_IG_SCORE = 0.80
 # --- Evolution Loop Config ---
@@ -316,6 +318,51 @@ def save_crrna_for_elite(variant_name, crrna_lookup_id, domain_metadata):
         f.write(f"{crrna_seq}\n")
 
 
+def _select_hepn_pair(sequence, motif, min_sep=150, max_sep=600, ideal_sep=300):
+    """
+    Select the best pair of R...H HEPN catalytic motifs from a protein sequence.
+
+    Uses positional and separation constraints rather than naive first/last:
+      - HEPN1 expected in the first 65% of the protein
+      - HEPN2 expected in the last 65%
+      - Typical separation: 150-600 residues (~300 ideal)
+
+    Returns (match1, match2) regex match objects, or None.
+    """
+    matches = list(motif.finditer(sequence))
+    if len(matches) < 2:
+        return None
+
+    seq_len = len(sequence)
+    early = [m for m in matches if m.start() < seq_len * 0.65]
+    late = [m for m in matches if m.start() > seq_len * 0.35]
+
+    best_pair = None
+    best_score = float('inf')
+    for m1 in early:
+        for m2 in late:
+            sep = m2.start() - m1.start()
+            if min_sep <= sep <= max_sep:
+                score = abs(sep - ideal_sep)
+                if score < best_score:
+                    best_score = score
+                    best_pair = (m1, m2)
+
+    if best_pair is not None:
+        return best_pair
+
+    for i, m1 in enumerate(matches):
+        for m2 in matches[i + 1:]:
+            sep = m2.start() - m1.start()
+            if min_sep <= sep <= max_sep:
+                score = abs(sep - ideal_sep)
+                if score < best_score:
+                    best_score = score
+                    best_pair = (m1, m2)
+
+    return best_pair
+
+
 def get_catalytic_histidine_indices(fasta_path):
     """Parses a FASTA to find the exact 1-based indices of the two catalytic Histidines.
     Uses only the first sequence if the FASTA contains multiple entries."""
@@ -339,11 +386,11 @@ def get_catalytic_histidine_indices(fasta_path):
         seq = "".join(seq_lines)
 
     motif = re.compile(r'R.{3,6}H')
-    matches = list(motif.finditer(seq))
-    if len(matches) < 2:
+    pair = _select_hepn_pair(seq, motif)
+    if pair is None:
         return None, None
-        
-    return matches[0].end(), matches[-1].end()
+
+    return pair[0].end(), pair[1].end()
 
 def extract_mutations(baseline_id, variant_fasta, baseline_fasta_path=None):
     """Compares the new variant against the original sequence to map the mutations.

@@ -116,6 +116,55 @@ def load_files_to_db(conn):
                 
     return items_processed
 
+def _select_hepn_pair(sequence, motif, min_sep=150, max_sep=600, ideal_sep=300):
+    """
+    Select the best pair of R...H HEPN catalytic motifs from a protein sequence.
+
+    Instead of naively taking first/last regex hit (which anchors on spurious
+    R...H occurrences in NTD or C-terminal regions), this applies positional
+    and separation constraints based on known Cas13 domain architecture:
+      - HEPN1 is expected in the first 65% of the protein
+      - HEPN2 is expected in the last 65% of the protein
+      - The two domains are typically 150-600 residues apart (~300 typical)
+
+    Returns (hepn1_center, hepn2_center) as 0-based positions, or None.
+    """
+    matches = list(motif.finditer(sequence))
+    if len(matches) < 2:
+        return None
+
+    seq_len = len(sequence)
+    early = [m for m in matches if m.start() < seq_len * 0.65]
+    late = [m for m in matches if m.start() > seq_len * 0.35]
+
+    best_pair = None
+    best_score = float('inf')
+    for m1 in early:
+        for m2 in late:
+            sep = m2.start() - m1.start()
+            if min_sep <= sep <= max_sep:
+                score = abs(sep - ideal_sep)
+                if score < best_score:
+                    best_score = score
+                    best_pair = (m1.start(), m2.start())
+
+    if best_pair is not None:
+        return best_pair
+
+    # Fallback: if no pair satisfies the strict positional constraints,
+    # try all pairs with just the separation filter
+    for i, m1 in enumerate(matches):
+        for m2 in matches[i + 1:]:
+            sep = m2.start() - m1.start()
+            if min_sep <= sep <= max_sep:
+                score = abs(sep - ideal_sep)
+                if score < best_score:
+                    best_score = score
+                    best_pair = (m1.start(), m2.start())
+
+    return best_pair
+
+
 def identify_hepn_domains(conn):
     """
     Scans sequences in the DB strictly for HEPN domains. 
@@ -129,26 +178,24 @@ def identify_hepn_domains(conn):
     # Select only sequences that haven't been successfully processed yet
     cursor.execute("SELECT sequence_id, sequence FROM variants WHERE sequence IS NOT NULL")
     
-    # R.{3,6}H: includes Cas13a (REFYH) while keeping Cas13e-like (R.{4,6}H)
     motif = re.compile(r'R.{3,6}H')
     processed = 0
     
     while True:
-        # Fetch a chunk of records to keep memory usage low
         batch = cursor.fetchmany(BATCH_SIZE)
         if not batch:
             break
             
         for seq_id, sequence in batch:
-            matches = list(motif.finditer(sequence))
+            pair = _select_hepn_pair(sequence, motif)
             
-            if len(matches) < 2:
+            if pair is None:
+                matches = list(motif.finditer(sequence))
                 update_cursor.execute('''
                     UPDATE variants SET status = 'failed', reason = ? WHERE sequence_id = ?
-                ''', (f"Only {len(matches)} HEPN motifs found.", seq_id))
+                ''', (f"Only {len(matches)} HEPN motifs found (or no valid pair).", seq_id))
             else:
-                hepn1_center = matches[0].start()
-                hepn2_center = matches[-1].start()
+                hepn1_center, hepn2_center = pair
                 
                 update_cursor.execute('''
                     UPDATE variants SET 

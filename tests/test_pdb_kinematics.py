@@ -66,15 +66,22 @@ class TestExtractProtenixScores:
 
 
 class TestCalculateHepnShift:
-    """Test calculate_hepn_shift."""
+    """Test calculate_hepn_shift — uses NE2 side-chain atoms when available."""
 
-    def test_returns_30_angstroms(self, minimal_pdb):
+    def test_uses_ne2_returns_26_angstroms(self, minimal_pdb):
+        """With NE2 atoms present, should measure NE2-NE2 = 26 A (not CA-CA = 30 A)."""
         dist = calculate_hepn_shift(minimal_pdb, 10, 50)
-        assert abs(dist - 30.0) < 0.01
+        assert abs(dist - 26.0) < 0.01
 
-    def test_returns_15_angstroms(self, minimal_pdb_15a):
+    def test_uses_ne2_returns_11_angstroms(self, minimal_pdb_15a):
+        """NE2-NE2 = 11 A (not CA-CA = 15 A)."""
         dist = calculate_hepn_shift(minimal_pdb_15a, 10, 50)
-        assert abs(dist - 15.0) < 0.01
+        assert abs(dist - 11.0) < 0.01
+
+    def test_falls_back_to_ca(self, minimal_pdb_ca_only):
+        """When no side-chain atoms exist, should fall back to CA-CA = 30 A."""
+        dist = calculate_hepn_shift(minimal_pdb_ca_only, 10, 50)
+        assert abs(dist - 30.0) < 0.01
 
     def test_missing_file_raises(self):
         with pytest.raises(FileNotFoundError, match="not found"):
@@ -85,6 +92,5 @@ class TestCalculateHepnShift:
             calculate_hepn_shift(minimal_pdb, 999, 50)
 
     def test_custom_chain_id(self, minimal_pdb):
-        """Default chain A works; other chains would need different PDB."""
         dist = calculate_hepn_shift(minimal_pdb, 10, 50, protein_chain_id="A")
-        assert abs(dist - 30.0) < 0.01
+        assert abs(dist - 26.0) < 0.01

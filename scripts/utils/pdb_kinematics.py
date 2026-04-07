@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import glob
 import shutil
@@ -8,8 +9,11 @@ from Bio.PDB import PDBParser, MMCIFParser, PDBIO
 import warnings
 from Bio import BiopythonWarning
 
-# Suppress minor PDB format warnings for cleaner RunPod logs
 warnings.simplefilter('ignore', BiopythonWarning)
+
+log = logging.getLogger(__name__)
+
+_HIS_RESNAMES = frozenset(("HIS", "HSE", "HSD", "HSP"))
 
 _RUST_STRUCTSCORE_BIN = shutil.which("cascade_structscore")
 if not _RUST_STRUCTSCORE_BIN:
@@ -140,11 +144,35 @@ def extract_protenix_scores(summary_json_path):
         "af2_ig": af2_ig
     }
 
+def _get_catalytic_coord(residue, label=""):
+    """
+    Get the most catalytically-relevant coordinate for a HEPN residue.
+
+    For histidines the NE2 atom is the functional group that coordinates Mg2+
+    and the RNA substrate. Falls back through ND1 -> CG -> CA if side-chain
+    atoms are missing (e.g. backbone-only predictions).
+    """
+    resname = residue.get_resname().strip().upper()
+    if resname not in _HIS_RESNAMES:
+        log.warning(
+            f"{label} catalytic residue is {resname} (id={residue.id}), not HIS — "
+            f"HEPN motif may have anchored incorrectly"
+        )
+
+    for atom_name in ('NE2', 'ND1', 'CG', 'CA'):
+        if atom_name in residue:
+            return residue[atom_name].get_coord()
+    raise KeyError(f"No suitable atom found in {resname} {residue.id}")
+
+
 def calculate_hepn_shift(structure_path, hepn1_his_idx, hepn2_his_idx, protein_chain_id='A'):
     """
     Parses a PDB or CIF file and calculates the 3D Euclidean distance (in Angstroms)
-    between the Alpha-Carbons of the two catalytic Histidines in the HEPN domains.
-    Accepts .pdb or .cif; uses Biopython MMCIFParser for CIF.
+    between the catalytic histidines in the two HEPN domains.
+
+    Prefers the side-chain NE2 atom (the functional imidazole nitrogen that
+    coordinates Mg2+ and the RNA phosphodiester backbone). Falls back to
+    ND1 -> CG -> CA when side-chain atoms are absent.
     """
     if not os.path.exists(structure_path):
         raise FileNotFoundError(f"Structure file not found: {structure_path}")
@@ -168,8 +196,6 @@ def calculate_hepn_shift(structure_path, hepn1_his_idx, hepn2_his_idx, protein_c
         model = structure[0]
         chain = model[protein_chain_id]
         
-        # Protenix outputs use sequential 1-based numbering matching FASTA positions,
-        # so try sequential indexing first, then fall back to PDB resseq lookup.
         std_residues = [r for r in chain.get_residues() if r.id[0] == ' ']
         idx1 = hepn1_his_idx - 1
         idx2 = hepn2_his_idx - 1
@@ -179,8 +205,8 @@ def calculate_hepn_shift(structure_path, hepn1_his_idx, hepn2_his_idx, protein_c
             res1 = chain[hepn1_his_idx]
             res2 = chain[hepn2_his_idx]
         
-        coord1 = res1['CA'].get_coord()
-        coord2 = res2['CA'].get_coord()
+        coord1 = _get_catalytic_coord(res1, label="HEPN1")
+        coord2 = _get_catalytic_coord(res2, label="HEPN2")
         
         distance_angstroms = np.linalg.norm(coord1 - coord2)
         return float(distance_angstroms)

@@ -103,6 +103,57 @@ class TestIdentifyHepnDomains:
         conn.close()
 
 
+class TestSelectHepnPair:
+    """Test _select_hepn_pair with the improved separation/positional filtering."""
+
+    def test_picks_correct_pair_over_first_last(self, tmpdir, monkeypatch):
+        """Sequence with spurious R...H in NTD and C-term; real HEPN pair in the middle."""
+        import re
+        # Build a ~900 residue sequence with R...H hits at multiple positions.
+        # Spurious hit at pos ~5 (NTD), real HEPN1 at ~200, real HEPN2 at ~500,
+        # spurious hit at ~890 (C-term). First/last would pick 5 and 890.
+        seq = "G" * 5 + "RAAAAH" + "G" * 189 + "RBBBBH" + "G" * 294 + "RCCCCCH" + "G" * 389 + "RDDDDDH" + "G" * 10
+        motif = re.compile(r'R.{3,6}H')
+        matches = list(motif.finditer(seq))
+        assert len(matches) == 4, f"Expected 4 R...H hits, got {len(matches)}"
+
+        pair = parse_mod._select_hepn_pair(seq, motif)
+        assert pair is not None
+        h1, h2 = pair
+        sep = h2 - h1
+        assert 150 <= sep <= 600, f"Separation {sep} outside expected range"
+        assert h1 != matches[0].start(), "Should NOT pick the first (NTD) hit"
+        assert h2 != matches[-1].start(), "Should NOT pick the last (C-term) hit"
+
+    def test_returns_none_for_single_motif(self):
+        import re
+        seq = "G" * 100 + "RAAAAH" + "G" * 100
+        motif = re.compile(r'R.{3,6}H')
+        assert parse_mod._select_hepn_pair(seq, motif) is None
+
+    def test_returns_none_for_no_motifs(self):
+        import re
+        seq = "G" * 500
+        motif = re.compile(r'R.{3,6}H')
+        assert parse_mod._select_hepn_pair(seq, motif) is None
+
+    def test_fallback_when_no_positional_match(self):
+        """Two motifs both in the first half, but with valid separation."""
+        import re
+        seq = "G" * 10 + "RAAAAH" + "G" * 200 + "RBBBBH" + "G" * 800
+        motif = re.compile(r'R.{3,6}H')
+        pair = parse_mod._select_hepn_pair(seq, motif)
+        assert pair is not None, "Fallback path should still find a valid pair"
+
+    def test_rejects_close_pairs(self):
+        """Two motifs only 50 residues apart — should be rejected."""
+        import re
+        seq = "G" * 200 + "RAAAAH" + "G" * 44 + "RBBBBH" + "G" * 200
+        motif = re.compile(r'R.{3,6}H')
+        pair = parse_mod._select_hepn_pair(seq, motif)
+        assert pair is None
+
+
 class TestGenerateProtenixJsons:
     """Test generate_protenix_jsons."""
 

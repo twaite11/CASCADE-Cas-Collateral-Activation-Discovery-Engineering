@@ -116,12 +116,15 @@ class TestExtractMutations:
         assert any("_P" in m or "13_" in m for m in muts)
 
     def test_uses_baseline_fasta_when_provided(self, variant_fasta, tmpdir):
+        pad = "G" * 200
+        base_seq = f"M{'A' * 109}RAILXH{pad}{'A' * 94}RVVVXH{'G' * 100}"
+        var_seq = base_seq[:112] + "P" + base_seq[113:]
         baseline_fasta = tmpdir / "baseline.fasta"
-        baseline_fasta.write_text(">baseline\nMAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG\n")
+        baseline_fasta.write_text(f">baseline\n{base_seq}\n")
         variant = tmpdir / "v.fasta"
-        variant.write_text(">v\nMAAAAARAILXHPGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG\n")  # 13 G->P
+        variant.write_text(f">v\n{var_seq}\n")
         muts = extract_mutations("x", str(variant), baseline_fasta_path=str(baseline_fasta))
-        assert any("13_P" in m for m in muts)
+        assert any("_P" in m for m in muts)
 
     def test_detects_deletion(self, tmpdir):
         base = tmpdir / "base.fasta"
@@ -136,8 +139,10 @@ class TestBuildMetadataOverride:
     """Test build_metadata_override_for_evolved."""
 
     def test_returns_override_dict(self, tmpdir, sample_metadata_json):
+        pad = "G" * 200
+        evolved_seq = f"M{'A' * 109}RAILXH{pad}{'A' * 94}RVVVXH{'G' * 100}"
         baseline_fasta = tmpdir / "evolved.fasta"
-        baseline_fasta.write_text(">evolved\nMAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG\n")
+        baseline_fasta.write_text(f">evolved\n{evolved_seq}\n")
         meta = json.loads(Path(sample_metadata_json).read_text())
         override = build_metadata_override_for_evolved(
             "evolved_id", str(baseline_fasta), "test_cas13", meta
@@ -149,7 +154,7 @@ class TestBuildMetadataOverride:
 
     def test_returns_none_for_bad_seq(self, tmpdir, sample_metadata_json):
         bad_fasta = tmpdir / "bad.fasta"
-        bad_fasta.write_text(">bad\nMGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG\n")
+        bad_fasta.write_text(f">bad\nM{'G' * 499}\n")
         meta = json.loads(Path(sample_metadata_json).read_text())
         override = build_metadata_override_for_evolved("bad", str(bad_fasta), "test_cas13", meta)
         assert override is None

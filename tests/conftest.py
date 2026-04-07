@@ -18,50 +18,74 @@ import tempfile
 import pytest
 
 
-# --- Minimal PDB with two residues for HEPN distance testing ---
-# Residues at positions 10 and 50, CA atoms at (0,0,0) and (30,0,0) = 30 Angstroms
-MINIMAL_PDB = """ATOM      1  N   ALA A  10       0.000   0.000   0.000  1.00  0.00           N
-ATOM      2  CA  ALA A  10       0.000   0.000   0.000  1.00  0.00           C
-ATOM      3  C   ALA A  10       0.000   0.000   0.000  1.00  0.00           C
-ATOM      4  O   ALA A  10       0.000   0.000   0.000  1.00  0.00           O
-ATOM      5  N   ALA A  11       0.000   0.000   0.000  1.00  0.00           N
-ATOM      6  CA  ALA A  11       0.000   0.000   0.000  1.00  0.00           C
-ATOM      7  N   HIS A  50      30.000   0.000   0.000  1.00  0.00           N
-ATOM      8  CA  HIS A  50      30.000   0.000   0.000  1.00  0.00           C
-ATOM      9  C   HIS A  50      30.000   0.000   0.000  1.00  0.00           C
-ATOM     10  O   HIS A  50      30.000   0.000   0.000  1.00  0.00           O
+# --- Minimal PDB with two HIS residues for HEPN distance testing ---
+# Residue 10 (HIS): CA at (0,0,0), NE2 at (2,0,0)
+# Residue 50 (HIS): CA at (30,0,0), NE2 at (28,0,0)
+# CA-CA = 30 A, NE2-NE2 = 26 A
+MINIMAL_PDB = """ATOM      1  N   HIS A  10       0.000   0.000   0.000  1.00  0.00           N
+ATOM      2  CA  HIS A  10       0.000   0.000   0.000  1.00  0.00           C
+ATOM      3  C   HIS A  10       0.000   0.000   0.000  1.00  0.00           C
+ATOM      4  O   HIS A  10       0.000   0.000   0.000  1.00  0.00           O
+ATOM      5  CG  HIS A  10       1.000   0.000   0.000  1.00  0.00           C
+ATOM      6  ND1 HIS A  10       1.500   0.000   0.000  1.00  0.00           N
+ATOM      7  NE2 HIS A  10       2.000   0.000   0.000  1.00  0.00           N
+ATOM      8  N   ALA A  11       0.000   0.000   0.000  1.00  0.00           N
+ATOM      9  CA  ALA A  11       0.000   0.000   0.000  1.00  0.00           C
+ATOM     10  N   HIS A  50      30.000   0.000   0.000  1.00  0.00           N
+ATOM     11  CA  HIS A  50      30.000   0.000   0.000  1.00  0.00           C
+ATOM     12  C   HIS A  50      30.000   0.000   0.000  1.00  0.00           C
+ATOM     13  O   HIS A  50      30.000   0.000   0.000  1.00  0.00           O
+ATOM     14  CG  HIS A  50      29.000   0.000   0.000  1.00  0.00           C
+ATOM     15  ND1 HIS A  50      28.500   0.000   0.000  1.00  0.00           N
+ATOM     16  NE2 HIS A  50      28.000   0.000   0.000  1.00  0.00           N
 END
 """
 
-# PDB with 15 Angstrom distance
-MINIMAL_PDB_15A = """ATOM      1  CA  ALA A  10       0.000   0.000   0.000  1.00  0.00           C
-ATOM      2  CA  HIS A  50      15.000   0.000   0.000  1.00  0.00           C
+# PDB with NE2-NE2 = 11 A (CA-CA = 15 A)
+# Residue 10 (HIS): CA at (0,0,0), NE2 at (2,0,0)
+# Residue 50 (HIS): CA at (15,0,0), NE2 at (13,0,0)
+MINIMAL_PDB_15A = """ATOM      1  CA  HIS A  10       0.000   0.000   0.000  1.00  0.00           C
+ATOM      2  NE2 HIS A  10       2.000   0.000   0.000  1.00  0.00           N
+ATOM      3  CA  HIS A  50      15.000   0.000   0.000  1.00  0.00           C
+ATOM      4  NE2 HIS A  50      13.000   0.000   0.000  1.00  0.00           N
 END
 """
 
-# Sequence with R.{4,6}H motif: RAILXH and RVVVXH (1-based His at 12 and 37)
-FASTA_WITH_HEPN = """>test_cas13
-MAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG
+# PDB with only CA atoms (no side-chain) — tests fallback to CA
+MINIMAL_PDB_CA_ONLY = """ATOM      1  N   HIS A  10       0.000   0.000   0.000  1.00  0.00           N
+ATOM      2  CA  HIS A  10       0.000   0.000   0.000  1.00  0.00           C
+ATOM      3  N   HIS A  50      30.000   0.000   0.000  1.00  0.00           N
+ATOM      4  CA  HIS A  50      30.000   0.000   0.000  1.00  0.00           C
+END
 """
 
-# Variant with G->P at position 13 (1-based)
-FASTA_VARIANT_SINGLE_MUT = """>test_cas13_variant
-MAAAAARAILXHPGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG
+# Sequence with two R.{4,6}H HEPN motifs separated by ~300 residues.
+# HEPN1 motif at pos ~110, HEPN2 motif at ~410.  Total length = 500.
+_PAD_100 = "G" * 100
+_PAD_200 = "G" * 200
+_HEPN_SEQ = f"M{'A' * 109}RAILXH{_PAD_200}{'A' * 94}RVVVXH{_PAD_100}"  # 500 aa
+FASTA_WITH_HEPN = f""">test_cas13
+{_HEPN_SEQ}
 """
 
-# Baseline for mutation comparison
-FASTA_BASELINE = """>baseline_id
-MAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG
+# Variant with A->P at position 113 (1-based, just after first HEPN motif)
+_VARIANT_SEQ = _HEPN_SEQ[:112] + "P" + _HEPN_SEQ[113:]
+FASTA_VARIANT_SINGLE_MUT = f""">test_cas13_variant
+{_VARIANT_SEQ}
+"""
+
+FASTA_BASELINE = f""">baseline_id
+{_HEPN_SEQ}
 """
 
 # Sequence with only one HEPN motif (should fail)
-FASTA_ONE_HEPN = """>bad_seq
-MAAAAARAILXHGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
+FASTA_ONE_HEPN = f""">bad_seq
+M{'A' * 109}RAILXH{'G' * 390}
 """
 
 # Sequence with no HEPN motif
-FASTA_NO_HEPN = """>no_hepn
-MGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
+FASTA_NO_HEPN = f""">no_hepn
+M{'G' * 499}
 """
 
 
@@ -101,22 +125,23 @@ test_cas13,AAACCCGGGTTT,SRR123,0.9
 
 @pytest.fixture
 def sample_metadata_json(tmpdir):
-    """Variant domain metadata as produced by 01_parse_and_annotate."""
+    """Variant domain metadata as produced by 01_parse_and_annotate.
+    HEPN1 motif at ~110, HEPN2 motif at ~410 in 500-residue sequences."""
     p = tmpdir / "variant_domain_metadata.json"
     meta = {
         "test_cas13": {
-            "sequence_length": 45,
+            "sequence_length": 500,
             "domains": {
-                "HEPN1": {"start": 0, "end": 85},
-                "HEPN2": {"start": 20, "end": 105},
+                "HEPN1": {"start": 80, "end": 190},
+                "HEPN2": {"start": 380, "end": 490},
             },
             "crRNA_repeat_used": "AAACCCGGGUUU",
         },
         "baseline_id": {
-            "sequence_length": 45,
+            "sequence_length": 500,
             "domains": {
-                "HEPN1": {"start": 0, "end": 85},
-                "HEPN2": {"start": 20, "end": 105},
+                "HEPN1": {"start": 80, "end": 190},
+                "HEPN2": {"start": 380, "end": 490},
             },
             "crRNA_repeat_used": "AAACCCGGGUUU",
         },
@@ -127,7 +152,7 @@ def sample_metadata_json(tmpdir):
 
 @pytest.fixture
 def minimal_pdb(tmpdir):
-    """Minimal PDB with two CA atoms 30A apart at residues 10 and 50."""
+    """Minimal PDB with two HIS residues: NE2-NE2 = 26 A, CA-CA = 30 A."""
     p = tmpdir / "model.pdb"
     p.write_text(MINIMAL_PDB)
     return str(p)
@@ -135,9 +160,17 @@ def minimal_pdb(tmpdir):
 
 @pytest.fixture
 def minimal_pdb_15a(tmpdir):
-    """Minimal PDB with 15A distance."""
+    """Minimal PDB with two HIS residues: NE2-NE2 = 11 A, CA-CA = 15 A."""
     p = tmpdir / "model_15a.pdb"
     p.write_text(MINIMAL_PDB_15A)
+    return str(p)
+
+
+@pytest.fixture
+def minimal_pdb_ca_only(tmpdir):
+    """Minimal PDB with HIS residues but only CA atoms (no side-chain)."""
+    p = tmpdir / "model_ca_only.pdb"
+    p.write_text(MINIMAL_PDB_CA_ONLY)
     return str(p)
 
 
@@ -168,11 +201,10 @@ def baseline_json(tmpdir, sample_metadata_json):
     """Baseline Protenix JSON (from jsons/)."""
     meta = json.loads(Path(sample_metadata_json).read_text())
     crrna = meta["baseline_id"]["crRNA_repeat_used"] + "GUCGACUGACGUACGUACGUACGU"
-    # Protenix format: proteinChain/rnaSequence
     payload = [{
         "name": "baseline_id",
         "sequences": [
-            {"proteinChain": {"sequence": "MAAAAARAILXHGGGGGGGGGGGGGGGGGGGRVVVXHGGGGGGGG", "count": 1}},
+            {"proteinChain": {"sequence": _HEPN_SEQ, "count": 1}},
             {"rnaSequence": {"sequence": crrna, "count": 1}},
             {"rnaSequence": {"sequence": "AAAAAAACGUACGUACGUACGUCAGUCGACAAAAAA", "count": 1}},
         ],
