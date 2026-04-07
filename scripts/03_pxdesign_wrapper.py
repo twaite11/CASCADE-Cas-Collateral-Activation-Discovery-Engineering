@@ -194,17 +194,32 @@ def _cif_to_enzyme_pdb(cif_path: str, output_pdb: str) -> bool:
     # ProteinMPNN requires standard amino acid names. Backbone-only CIFs from
     # PXDesign infer label every residue as UNK/XQB — replace with ALA so MPNN
     # can design real sequences for the backbone geometry.
+    # CRITICAL: Biopython parses non-standard residues (UNK, XQB) as HETATM
+    # with id[0] = "H_UNK". These get filtered out by PDBIO's default
+    # accept_residue. We must fix the hetflag to " " (standard ATOM record).
+    # Biopython uses res.id as a dict key in Chain, so we detach/re-add.
     n_renamed = 0
     for chain in protein_chains:
+        residues_to_fix = []
         for res in chain:
-            if res.id[0] != " ":
-                continue
             resname = res.get_resname().strip().upper()
-            if resname not in _AA3_TO_1:
-                res.resname = "ALA"
-                n_renamed += 1
+            if resname not in _AA3_TO_1 or res.id[0] != " ":
+                residues_to_fix.append(res)
+
+        for res in residues_to_fix:
+            old_id = res.id
+            res.resname = "ALA"
+            if old_id[0] != " ":
+                new_id = (" ", old_id[1], old_id[2])
+                if new_id in chain:
+                    n_renamed += 1
+                    continue
+                chain.detach_child(old_id)
+                res.id = new_id
+                chain.add(res)
+            n_renamed += 1
     if n_renamed:
-        log.info(f"  Renamed {n_renamed} non-standard residues to ALA for ProteinMPNN")
+        log.info(f"  Renamed {n_renamed} non-standard residues to ALA (ATOM) for ProteinMPNN")
 
     class ProteinOnlySelect(Select):
         def accept_chain(self, chain):
@@ -217,11 +232,20 @@ def _cif_to_enzyme_pdb(cif_path: str, output_pdb: str) -> bool:
     io.save(output_pdb, ProteinOnlySelect())
 
     chain_info = ", ".join(f"{old}->{new}" for old, new in remap.items())
-    log.info(f"  CIF→PDB: extracted {len(protein_chains)} protein chain(s) [{chain_info}]")
-    return True
+    # Verify PDB has ATOM records (not just HETATM)
+    n_atom = 0
+    if os.path.isfile(output_pdb):
+        with open(output_pdb) as _pf:
+            for _line in _pf:
+                if _line.startswith("ATOM"):
+                    n_atom += 1
+    log.info(f"  CIF→PDB: extracted {len(protein_chains)} protein chain(s) [{chain_info}], {n_atom} ATOM records")
+    if n_atom == 0:
+        log.warning(f"  CIF→PDB produced 0 ATOM records — ProteinMPNN will fail!")
+    return n_atom > 0
 
 
-def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float = 0.1) -> str:
+def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 4, temperature: float = 0.1) -> str:
     """
     Design a sequence for a backbone-only CIF using standalone ProteinMPNN.
 
@@ -267,6 +291,11 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
             log.warning("ProteinMPNN chain parser produced empty output")
             return ""
 
+        with open(jsonl_path) as _jf:
+            _parsed_content = _jf.read().strip()
+        log.info(f"  MPNN parsed chains: {len(_parsed_content)} bytes, "
+                 f"{_parsed_content.count(chr(10))+1} entries")
+
         # Step 3: run ProteinMPNN (enzyme-only, no RNA)
         out_dir = os.path.join(tmp, "output")
         os.makedirs(out_dir, exist_ok=True)
@@ -278,12 +307,17 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
             "--sampling_temp", str(temperature),
             "--batch_size", "8",
         ]
+        log.info(f"  MPNN cmd: {' '.join(mpnn_cmd)}")
         try:
             result = subprocess.run(mpnn_cmd, capture_output=True, text=True, timeout=300, check=True)
+            if result.stdout:
+                log.info(f"  MPNN stdout (tail): {result.stdout.strip()[-500:]}")
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             log.warning(f"ProteinMPNN sequence design failed: {e}")
             if hasattr(e, "stderr") and e.stderr:
                 log.warning(f"  stderr: {e.stderr[-2000:]}")
+            if hasattr(e, "stdout") and e.stdout:
+                log.warning(f"  stdout: {e.stdout[-2000:]}")
             return ""
         except FileNotFoundError:
             log.warning(f"ProteinMPNN run script not found: {run_script}")
@@ -292,7 +326,9 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
         # Step 4: parse output — grab the last chain's sequence (binder)
         fa_glob = glob.glob(os.path.join(out_dir, "seqs", "*.fa"))
         if not fa_glob:
-            log.warning("ProteinMPNN produced no output FASTA")
+            fa_glob = glob.glob(os.path.join(out_dir, "**", "*.fa"), recursive=True)
+        if not fa_glob:
+            log.warning("ProteinMPNN produced no output FASTA files under %s", out_dir)
             return ""
 
         best_seq = ""
@@ -300,6 +336,10 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
         for fa_path in fa_glob:
             with open(fa_path) as f:
                 lines = f.readlines()
+
+            log.info(f"  MPNN FASTA {os.path.basename(fa_path)}: {len(lines)} lines, "
+                     f"{sum(1 for l in lines if l.startswith('>'))} records")
+
             record_idx = 0
             i = 0
             while i < len(lines):
@@ -313,22 +353,23 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
                 record_idx += 1
                 if not raw_seq:
                     continue
-                # Record 1 is always the input/native sequence (all X for
-                # backbone-only inputs). Designed sequences start with
-                # ">T=<temperature>, sample=N, score=..." — do NOT skip those.
-                if record_idx == 1:
-                    log.debug(f"  MPNN skipping input record: {header[:80]}")
-                    continue
+
                 # Multi-chain outputs use '/' as chain separator — take
                 # the last chain (binder) since we only want the designed
                 # protein, not target/scaffold chains.
                 if "/" in raw_seq:
-                    seq = raw_seq.split("/")[-1]
+                    chains_seqs = raw_seq.split("/")
+                    seq = chains_seqs[-1]
                 else:
                     seq = raw_seq
-                x_in_design = seq.count("X")
-                if x_in_design > 0:
-                    log.debug(f"  MPNN record {record_idx}: {len(seq)}-aa, {x_in_design} X residues")
+
+                x_frac = seq.count("X") / max(len(seq), 1)
+
+                # Record 1 is always the input/native sequence echo.
+                if record_idx == 1:
+                    log.info(f"  MPNN rec 1 (input echo): {len(seq)}-aa, {x_frac:.0%} X | {header[:80]}")
+                    continue
+
                 score = float("inf")
                 for part in header.split(","):
                     part = part.strip()
@@ -337,8 +378,12 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
                             score = float(part.split("=")[1])
                         except ValueError:
                             pass
-                if seq.count("X") / max(len(seq), 1) > 0.5:
-                    log.debug(f"  MPNN record {record_idx} is >50%% X — likely input echo, skipping")
+
+                log.info(f"  MPNN rec {record_idx}: {len(seq)}-aa, {x_frac:.0%} X, "
+                         f"score={score:.3f} | {seq[:40]}...")
+
+                if x_frac > 0.5:
+                    log.info(f"  MPNN rec {record_idx}: >50%% X — skipping")
                     continue
                 if score < best_score:
                     best_score = score
