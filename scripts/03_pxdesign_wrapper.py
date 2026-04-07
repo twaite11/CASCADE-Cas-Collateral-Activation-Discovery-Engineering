@@ -427,11 +427,14 @@ def _build_pssm_jsonl(bias: dict, chain_a_len: int, chain_b_len: int,
                 if aa_idx is not None:
                     pssm_b[binder_idx, aa_idx] = float(weight)
 
+    coef_a = np.zeros(chain_a_len, dtype=float).tolist()
+    coef_b = np.ones(chain_b_len, dtype=float).tolist()
+
     pssm_entry = {
         "backbone": {
-            "A": {"pssm_coef": 0.0, "pssm_bias": pssm_a.tolist(),
+            "A": {"pssm_coef": coef_a, "pssm_bias": pssm_a.tolist(),
                    "pssm_log_odds": pssm_a.tolist()},
-            "B": {"pssm_coef": 1.0, "pssm_bias": pssm_b.tolist(),
+            "B": {"pssm_coef": coef_b, "pssm_bias": pssm_b.tolist(),
                    "pssm_log_odds": pssm_b.tolist()},
         }
     }
