@@ -400,16 +400,20 @@ _MPNN_AA_ORDER = "ACDEFGHIKLMNPQRSTVWY"
 _MPNN_AA_TO_IDX = {aa: i for i, aa in enumerate(_MPNN_AA_ORDER)}
 
 
-def _build_pssm_jsonl(bias: dict, chain_b_len: int, rec_end: int, tmp_dir: str) -> str:
+def _build_pssm_jsonl(bias: dict, chain_a_len: int, chain_b_len: int,
+                      rec_end: int, tmp_dir: str) -> str:
     """
     Convert RL bias dict ({"1-based_pos": {"AA": weight}}) into ProteinMPNN's
-    PSSM JSONL format: a (L x 20) log-odds matrix for chain B.
+    PSSM JSONL format.
 
-    ProteinMPNN expects amino acids in alphabetical order: ACDEFGHIKLMNPQRSTVWY.
-    Positions without bias get all zeros (no preference).
+    ProteinMPNN expects: {pdb_name: {chain_id: {pssm_coef, pssm_bias, pssm_log_odds}}}
+    where pssm_bias and pssm_log_odds are (L x 20) matrices.
+    Chain A (scaffold) gets all zeros (no preference). Chain B (binder) gets RL bias.
+    Amino acids in alphabetical order: ACDEFGHIKLMNPQRSTVWY.
     """
     import numpy as np
-    pssm = np.zeros((chain_b_len, 20), dtype=float)
+    pssm_a = np.zeros((chain_a_len, 20), dtype=float)
+    pssm_b = np.zeros((chain_b_len, 20), dtype=float)
 
     for pos_str, aa_weights in bias.items():
         try:
@@ -421,10 +425,16 @@ def _build_pssm_jsonl(bias: dict, chain_b_len: int, rec_end: int, tmp_dir: str) 
             for aa, weight in aa_weights.items():
                 aa_idx = _MPNN_AA_TO_IDX.get(aa.upper())
                 if aa_idx is not None:
-                    pssm[binder_idx, aa_idx] = float(weight)
+                    pssm_b[binder_idx, aa_idx] = float(weight)
 
-    pssm_entry = {"backbone": {"pssm_coef": 1.0, "pssm_bias": pssm.tolist(),
-                                "pssm_log_odds": pssm.tolist()}}
+    pssm_entry = {
+        "backbone": {
+            "A": {"pssm_coef": 0.0, "pssm_bias": pssm_a.tolist(),
+                   "pssm_log_odds": pssm_a.tolist()},
+            "B": {"pssm_coef": 1.0, "pssm_bias": pssm_b.tolist(),
+                   "pssm_log_odds": pssm_b.tolist()},
+        }
+    }
     pssm_path = os.path.join(tmp_dir, "pssm.jsonl")
     with open(pssm_path, "w") as f:
         f.write(json.dumps(pssm_entry) + "\n")
@@ -547,7 +557,7 @@ def _run_mpnn_refinement(
         # Build PSSM bias from RL weights for MPNN-native soft guidance
         pssm_path = None
         if bias:
-            pssm_path = _build_pssm_jsonl(bias, binder_len, rec_end, tmp)
+            pssm_path = _build_pssm_jsonl(bias, chain_a_len, binder_len, rec_end, tmp)
 
         mpnn_cmd = [
             "python", run_script,
