@@ -288,8 +288,8 @@ def reassign_crrna_for_baselines(offline: bool = False):
                 arrays = find_crispr_arrays(contig_seq)
                 accession_arrays[acc_id] = arrays
                 if arrays:
-                    log.info(f"  {acc_id}: {len(arrays)} CRISPR array(s) found "
-                             f"({', '.join(f'{a['n_repeats']}x{len(a['consensus_repeat'])}nt' for a in arrays)})")
+                    arr_desc = ", ".join(str(a["n_repeats"]) + "x" + str(len(a["consensus_repeat"])) + "nt" for a in arrays)
+                    log.info(f"  {acc_id}: {len(arrays)} CRISPR array(s) found ({arr_desc})")
                 else:
                     log.warning(f"  {acc_id}: NO genuine CRISPR arrays detected")
             else:
