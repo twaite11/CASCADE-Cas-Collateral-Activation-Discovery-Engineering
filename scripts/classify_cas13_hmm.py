@@ -106,10 +106,14 @@ def classify_by_hepn_motifs(protein_seq: str) -> dict:
         result["confidence"] = "medium"
 
     for subtype, patterns in CAS13_DIAGNOSTIC_PATTERNS.items():
+        matched = False
         for pat in patterns:
             if pat.search(seq):
                 result["subtype_guess"] = subtype
+                matched = True
                 break
+        if matched:
+            break
 
     return result
 
