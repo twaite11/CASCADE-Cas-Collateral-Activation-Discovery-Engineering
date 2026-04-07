@@ -116,26 +116,30 @@ def classify_by_hepn_motifs(protein_seq: str) -> dict:
 
 def _score_hepn_pair(motif1: str, motif2: str, spacing: int) -> float:
     """Score a HEPN motif pair for Cas13 likelihood (0-1).
-    Real Cas13 HEPN motifs have: R at pos 0, H at last pos,
-    conserved residue patterns in between, and ~200-400aa spacing."""
+    Dual HEPN with Cas13-typical spacing (150-500aa) is the primary signal.
+    Consensus motif similarity is a bonus, not a gate."""
     score = 0.0
+
+    if 200 <= spacing <= 400:
+        score += 0.35
+    elif 150 <= spacing <= 500:
+        score += 0.25
+    elif 100 <= spacing <= 800:
+        score += 0.10
 
     for motif in [motif1, motif2]:
         if motif[0] != "R" or motif[-1] != "H":
             continue
         inner = motif[1:-1]
+        if 3 <= len(inner) <= 7:
+            score += 0.10
         best_sim = 0.0
         for consensus in HEPN_CONSENSUS_SEQS:
             cons_inner = consensus[1:-1]
             matches = sum(1 for a, b in zip(inner, cons_inner) if a == b)
             sim = matches / max(len(inner), len(cons_inner), 1)
             best_sim = max(best_sim, sim)
-        score += best_sim * 0.4
-
-    if 200 <= spacing <= 400:
-        score += 0.2
-    elif 150 <= spacing <= 500:
-        score += 0.1
+        score += best_sim * 0.15
 
     return min(score, 1.0)
 
