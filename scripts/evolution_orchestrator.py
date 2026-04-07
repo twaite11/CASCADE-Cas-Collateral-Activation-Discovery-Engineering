@@ -1,3 +1,4 @@
+import csv
 import os
 import json
 import multiprocessing
@@ -81,6 +82,7 @@ GENERATION_DIR = "../outputs/generation_queue"
 FAST_EVAL_DIR = "../outputs/fast_eval"
 HIGH_FIDELITY_DIR = "../outputs/high_fidelity_scoring"
 FINAL_HITS_DIR = "../outputs/optimized_switches"
+SWITCH_REPORT_CSV = "../outputs/optimized_switches/switch_report.csv"
 GYM_DIR = "../outputs/rl_gym_data"
 RL_TRAINING_DATASET = os.path.join(GYM_DIR, "rl_training_dataset.jsonl")
 VALIDATED_IDS_FILE = "../outputs/validated_baseline_ids.txt"  # From validate_crispr_repeats.py; restricts lineage to validated repeats
@@ -352,15 +354,16 @@ def save_rl_training_record(
 
 
 def build_metadata_override_for_evolved(baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata):
-    """Build metadata override dict for evolved variants not in variant_domain_metadata.json."""
+    """Build metadata override dict for evolved variants not in variant_domain_metadata.json.
+    Uses _select_hepn_pair for consistent HEPN domain pairing (not first/last regex hit)."""
     with open(baseline_fasta_path, 'r') as f:
         seq = "".join([l.strip() for l in f if not l.startswith(">")])
-    motif = re.compile(r'R.{3,6}H')  # includes Cas13a (REFYH)
-    matches = list(motif.finditer(seq))
-    if len(matches) < 2:
+    motif = re.compile(r'R.{3,6}H')
+    pair = _select_hepn_pair(seq, motif)
+    if pair is None:
         return None
-    hepn1_center = matches[0].start()
-    hepn2_center = matches[-1].start()
+    hepn1_center = pair[0].start()
+    hepn2_center = pair[1].start()
     parent_data = domain_metadata.get(crrna_lookup_id)
     if not parent_data:
         return None
@@ -390,6 +393,53 @@ def save_crrna_for_elite(variant_name, crrna_lookup_id, domain_metadata):
     with open(crrna_path, 'w') as f:
         f.write(f">{variant_name}_crRNA\n")
         f.write(f"{crrna_seq}\n")
+
+
+_REPORT_FIELDS = [
+    "variant", "lineage", "generation", "off_dist_A", "on_dist_A", "delta_A",
+    "iptm", "af2_ig", "fitness", "n_mutations", "filter_passed", "is_elite",
+    "score_source", "n_hepn_motifs", "hepn_spacing", "subtype",
+]
+_report_lock = None
+
+
+def _init_switch_report():
+    """Create the CSV header if the report doesn't exist yet."""
+    report_path = os.path.join(os.path.dirname(__file__), SWITCH_REPORT_CSV)
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    if not os.path.exists(report_path):
+        with open(report_path, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(_REPORT_FIELDS)
+
+
+def append_switch_report(variant_name, lineage_id, generation, off_dist, on_dist,
+                         iptm, af2_ig, fitness, n_mutations, filter_passed,
+                         is_elite, score_source, protein_seq=None, subtype="unknown"):
+    """Append one row to the switch report CSV (thread-safe via lock)."""
+    n_hepn = ""
+    hepn_spacing = ""
+    if protein_seq:
+        motif = re.compile(r'R.{3,6}H')
+        matches = list(motif.finditer(protein_seq))
+        n_hepn = len(matches)
+        pair = _select_hepn_pair(protein_seq, motif)
+        if pair:
+            hepn_spacing = pair[1].start() - pair[0].start()
+
+    row = [
+        variant_name, lineage_id, generation,
+        f"{off_dist:.1f}", f"{on_dist:.1f}", f"{off_dist - on_dist:.1f}",
+        f"{iptm:.4f}", f"{af2_ig:.4f}", f"{fitness:.2f}",
+        n_mutations, filter_passed, is_elite, score_source,
+        n_hepn, hepn_spacing, subtype,
+    ]
+
+    report_path = os.path.join(os.path.dirname(__file__), SWITCH_REPORT_CSV)
+    try:
+        with open(report_path, "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(row)
+    except OSError:
+        pass
 
 
 def _select_hepn_pair(sequence, motif, min_sep=150, max_sep=600, ideal_sep=300):
@@ -563,6 +613,14 @@ def _evaluate_baseline_reference(baseline_id, baseline_fasta_path, crrna_lookup_
     if not seq:
         log.warning(f"Could not read baseline sequence for {baseline_id}")
         return None
+
+    motif_check = re.compile(r'R.{3,6}H')
+    n_motifs = len(list(motif_check.finditer(seq)))
+    if n_motifs > 8:
+        log.warning(f"Baseline {baseline_id} has {n_motifs} R...H motifs — skipping (likely not a clean Cas13)")
+        return None
+    if n_motifs > 4:
+        log.info(f"Baseline {baseline_id}: {n_motifs} R...H motifs (expected 2 for Cas13 — selecting best pair)")
 
     import tempfile
     baseline_fasta_dir = os.path.join(FAST_EVAL_DIR, "baseline_fastas")
@@ -834,6 +892,21 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
                     generation_counter, mutations_made, fitness, off_dist, true_on_dist, iptm, af2_ig,
                     struct_path, offtarget_by_mismatch or None, is_elite, rl_dataset_path=rl_dataset,
                 )
+
+                variant_protein = None
+                try:
+                    with open(variant_fasta, 'r') as _vf:
+                        variant_protein = "".join(l.strip() for l in _vf if not l.startswith(">"))
+                except OSError:
+                    pass
+                _sub = domain_metadata.get(crrna_lid, {}).get("subtype", "unknown")
+                append_switch_report(
+                    variant_name, bid, generation_counter, off_dist, true_on_dist,
+                    iptm, af2_ig, fitness, len(mutations_made) if mutations_made else 0,
+                    has_potential, is_elite, score_source,
+                    protein_seq=variant_protein, subtype=_sub,
+                )
+
                 results.append({"name": variant_name, "fasta": variant_fasta, "fitness": fitness,
                                 "off": off_dist, "on": true_on_dist, "iptm": iptm, "af2_ig": af2_ig,
                                 "hf_pdb": hf_pdb_path, "crrna_lid": crrna_lid, "offtarget": offtarget_by_mismatch})
@@ -932,6 +1005,7 @@ def main_evolution_loop():
     os.makedirs(FAST_EVAL_DIR, exist_ok=True)
     os.makedirs(HIGH_FIDELITY_DIR, exist_ok=True)
     os.makedirs(GYM_DIR, exist_ok=True)
+    _init_switch_report()
     log.info(f"RL training data will be appended to {RL_TRAINING_DATASET} (see RL_TRAINING_FORMAT.md)")
 
     with open(METADATA_FILE, 'r') as f:
