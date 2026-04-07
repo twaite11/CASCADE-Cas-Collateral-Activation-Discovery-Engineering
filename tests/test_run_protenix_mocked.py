@@ -34,8 +34,6 @@ class TestRunProtenixInferenceMocked:
             run_protenix_inference(str(json_path), str(out_dir), model_tier="mini")
 
         mock_run.assert_called()
-        # May be called twice (msa + pred/predict) or once (pred only)
-        # Protenix 1.0+ uses "pred"; older versions use "predict" as fallback
         predict_calls = [c for c in mock_run.call_args_list if c[0][0] and ("pred" in c[0][0] or "predict" in c[0][0])]
         assert len(predict_calls) >= 1
         call_args = predict_calls[-1][0][0]
@@ -43,6 +41,8 @@ class TestRunProtenixInferenceMocked:
         assert "pred" in call_args or "predict" in call_args
         assert "protenix_mini_default_v0.5.0" in call_args
         assert "use_default_params" in str(call_args)
+        msa_idx = call_args.index("--use_msa")
+        assert call_args[msa_idx + 1] == "false", "Mini tier should skip MSA"
 
     def test_builds_base_command(self, tmpdir):
         """Verify base model CLI args."""
@@ -66,6 +66,8 @@ class TestRunProtenixInferenceMocked:
 
         call_args = mock_run.call_args[0][0]
         assert "protenix_base_default_v1.0.0" in call_args
+        msa_idx = call_args.index("--use_msa")
+        assert call_args[msa_idx + 1] == "true", "Base tier should enable MSA"
 
     def test_cattle_prod_fallback_when_non_strict(self, tmpdir):
         """If cattle-prod fails and strict mode is off, fallback to protenix."""

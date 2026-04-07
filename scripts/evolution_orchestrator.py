@@ -152,7 +152,9 @@ MAX_ON_DISTANCE = 7.0    # Ångströms (NE2-NE2; was 12.0 for CA-CA)
 MIN_IPTM_SCORE = 0.85
 MIN_AF2_IG_SCORE = 0.80
 # --- Evolution Loop Config ---
-MAX_GENERATIONS = 20
+MAX_GENERATIONS = 12
+VARIANTS_PER_GEN = 5
+STAGNATION_LIMIT = 4  # Abandon lineage after this many consecutive gens with no improvement
 MISMATCH_COUNTS = (1, 2, 3)  # Test 1-, 2-, 3-mismatch off-targets; activity at higher count penalized harder
 SPECIFICITY_PENALTY_BASE = 0.3  # Base penalty; scaled by mismatch count (3mm > 2mm > 1mm)
 # --- Memory / OOM mitigation (seconds; set to 0 to disable) ---
@@ -410,15 +412,8 @@ def _select_hepn_pair(sequence, motif, min_sep=150, max_sep=600, ideal_sep=300):
 
 def get_catalytic_histidine_indices(fasta_path):
     """Parses a FASTA to find the exact 1-based indices of the two catalytic Histidines.
-    Uses only the first sequence if the FASTA contains multiple entries."""
-    rust_out = _run_rust_sequtils(["find-histidines", "--fasta", str(fasta_path)])
-    if rust_out is not None:
-        try:
-            data = json.loads(rust_out)
-            return data.get("h1"), data.get("h2")
-        except (json.JSONDecodeError, TypeError):
-            pass
-
+    Uses only the first sequence if the FASTA contains multiple entries.
+    Always uses _select_hepn_pair for consistent pairing with 01_parse_and_annotate."""
     with open(fasta_path, 'r') as f:
         seq_lines = []
         for line in f:
@@ -636,6 +631,8 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
             gym.set_baseline_fitness(baseline_ref_fitness)
 
         current_baseline = baseline
+        stagnation_counter = 0
+        lineage_elite_found = False
 
         for generation_counter in range(1, MAX_GENERATIONS + 1):
             bid, bpdb, bfasta, crrna_lid = current_baseline
@@ -660,7 +657,7 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
                     metadata_path=METADATA_FILE,
                     bias_json_path=bias_file,
                     output_dir=os.path.join(gen_dir, f"gen_{generation_counter}"),
-                    variant_count=2,
+                    variant_count=VARIANTS_PER_GEN,
                     metadata_override=metadata_override,
                     baseline_fasta_path=bfasta,
                     base_json_dir=BASE_JSON_DIR,
@@ -820,6 +817,7 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
                     ext = os.path.splitext(gen_best_hf_pdb)[1] or ".pdb"
                     shutil.copy(gen_best_hf_pdb, os.path.join(FINAL_HITS_DIR, f"{gen_best_name}_ternary_complex{ext}"))
                 save_crrna_for_elite(gen_best_name, crrna_lid, domain_metadata)
+                lineage_elite_found = True
 
             if global_best is None or gen_best_fitness > global_best[2]:
                 resolved = _resolve_best_baseline(gen_best_name, gen_best_fasta, gen_best_hf_pdb, crrna_lid, domain_metadata)
@@ -831,17 +829,28 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
                     )
                     current_baseline = resolved
                     log.info(f"{tag} NEW GLOBAL BEST: {gen_best_name} (fitness={gen_best_fitness:.1f})")
+                    stagnation_counter = 0
                 else:
                     log.warning(f"{tag} Could not resolve structure for {gen_best_name}; reusing current baseline")
+                    stagnation_counter += 1
             else:
                 log.info(f"{tag} Gen best ({gen_best_fitness:.1f}) < global best ({global_best[2]:.1f}); reverting")
                 current_baseline = (global_best[0], global_best[7], global_best[1], global_best[8])
+                stagnation_counter += 1
 
             gym.flush_generation()
             if gym.mutation_weights:
                 bias_file = gym.generate_mpnn_bias_matrix(generation_counter)
 
-        log.info(f"{tag} Lineage {baseline_id} complete after {MAX_GENERATIONS} generations.")
+            if lineage_elite_found:
+                log.info(f"{tag} Elite found — moving to next lineage")
+                break
+
+            if stagnation_counter >= STAGNATION_LIMIT:
+                log.info(f"{tag} No improvement for {STAGNATION_LIMIT} consecutive generations — abandoning lineage")
+                break
+
+        log.info(f"{tag} Lineage {baseline_id} complete after {generation_counter} generation(s).")
 
     log.info(f"{tag} Worker finished all {len(baselines)} lineage(s).")
     return global_best

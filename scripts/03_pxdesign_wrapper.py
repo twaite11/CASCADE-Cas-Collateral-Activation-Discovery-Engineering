@@ -276,7 +276,7 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
             "--out_folder", out_dir,
             "--num_seq_per_target", str(num_seqs),
             "--sampling_temp", str(temperature),
-            "--batch_size", "1",
+            "--batch_size", "8",
         ]
         try:
             result = subprocess.run(mpnn_cmd, capture_output=True, text=True, timeout=300, check=True)
@@ -349,6 +349,41 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 1, temperature: float
         else:
             log.warning("ProteinMPNN output FASTA contained no usable sequences")
         return best_seq
+
+
+_MPNN_AA_ORDER = "ACDEFGHIKLMNPQRSTVWY"
+_MPNN_AA_TO_IDX = {aa: i for i, aa in enumerate(_MPNN_AA_ORDER)}
+
+
+def _build_pssm_jsonl(bias: dict, chain_b_len: int, rec_end: int, tmp_dir: str) -> str:
+    """
+    Convert RL bias dict ({"1-based_pos": {"AA": weight}}) into ProteinMPNN's
+    PSSM JSONL format: a (L x 20) log-odds matrix for chain B.
+
+    ProteinMPNN expects amino acids in alphabetical order: ACDEFGHIKLMNPQRSTVWY.
+    Positions without bias get all zeros (no preference).
+    """
+    import numpy as np
+    pssm = np.zeros((chain_b_len, 20), dtype=float)
+
+    for pos_str, aa_weights in bias.items():
+        try:
+            pos_0 = int(pos_str) - 1
+        except ValueError:
+            continue
+        binder_idx = pos_0 - rec_end
+        if 0 <= binder_idx < chain_b_len:
+            for aa, weight in aa_weights.items():
+                aa_idx = _MPNN_AA_TO_IDX.get(aa.upper())
+                if aa_idx is not None:
+                    pssm[binder_idx, aa_idx] = float(weight)
+
+    pssm_entry = {"backbone": {"pssm_coef": 1.0, "pssm_bias": pssm.tolist(),
+                                "pssm_log_odds": pssm.tolist()}}
+    pssm_path = os.path.join(tmp_dir, "pssm.jsonl")
+    with open(pssm_path, "w") as f:
+        f.write(json.dumps(pssm_entry) + "\n")
+    return pssm_path
 
 
 def _run_mpnn_refinement(
@@ -459,13 +494,15 @@ def _run_mpnn_refinement(
         log.info(f"  [MPNN refine] gen={generation_num}: unfreezing {len(designable_positions)}/{len(all_linker)} "
                  f"linker positions ({unfreeze_frac:.0%}), {len(bias)} RL bias entries")
 
-        # Run MPNN with fixed positions (PSSM bias added in future iteration)
         out_dir = os.path.join(tmp, "output")
         os.makedirs(out_dir)
 
-        # Higher temperature for designable positions = more diversity;
-        # ramp down over generations for exploitation
         design_temp = max(0.1, 0.3 - 0.02 * generation_num)
+
+        # Build PSSM bias from RL weights for MPNN-native soft guidance
+        pssm_path = None
+        if bias:
+            pssm_path = _build_pssm_jsonl(bias, binder_len, rec_end, tmp)
 
         mpnn_cmd = [
             "python", run_script,
@@ -473,9 +510,11 @@ def _run_mpnn_refinement(
             "--out_folder", out_dir,
             "--num_seq_per_target", str(variant_count),
             "--sampling_temp", str(design_temp),
-            "--batch_size", "1",
+            "--batch_size", "8",
             "--fixed_positions_jsonl", fixed_pos_path,
         ]
+        if pssm_path:
+            mpnn_cmd.extend(["--pssm_jsonl", pssm_path, "--pssm_multi", "0.5"])
 
         try:
             result = subprocess.run(mpnn_cmd, capture_output=True, text=True, timeout=300, check=True)

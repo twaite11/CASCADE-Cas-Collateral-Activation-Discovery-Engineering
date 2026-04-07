@@ -44,7 +44,8 @@ _CATTLE_PROD_STRICT = os.environ.get("CATTLE_PROD_STRICT", "1").strip().lower() 
 
 # RNA Constants (Must match what we defined in 01_parse_and_annotate.py)
 DUMMY_SPACER_RNA = "GUCGACUGACGUACGUACGUACGU"
-TARGET_REGION = "ACGUACGUACGUACGUCAGUCGAC"  # 24-nt spacer complement
+_RNA_COMPLEMENT = str.maketrans("AUGC", "UACG")
+TARGET_REGION = DUMMY_SPACER_RNA[::-1].translate(_RNA_COMPLEMENT)
 DUMMY_TARGET_RNA = "AAAAAA" + TARGET_REGION + "AAAAAA"
 
 
@@ -337,6 +338,7 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
     model_tier="base" for Script 5 (High Fidelity Oracle)
     seqres_db_path: if set and path exists, runs MSA first for better quality.
     Caches results: skips inference when structure + summary already exist.
+    Mini tier skips MSA for speed; base tier runs MSA for accuracy.
     """
     os.makedirs(out_dir, exist_ok=True)
     base_name = os.path.basename(json_path).replace(".json", "")
@@ -352,7 +354,11 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
     log.info(f"Starting {engine} {tier_label} inference for {base_name} (this may take several minutes)...")
     log.info(f"  eval_decision: engine={engine} strict_mode={_CATTLE_PROD_STRICT}")
 
-    predict_input = _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin)
+    use_msa = model_tier != "mini"
+    if use_msa:
+        predict_input = _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin)
+    else:
+        predict_input = json_path
 
     model_name = _model_name_for_tier(model_tier, engine)
     checkpoint_dir = None
@@ -365,12 +371,13 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
         else:
             base_fallback = "protenix_base_default_v0.5.0"
 
+    msa_flag = "true" if use_msa else "false"
     cmd = [
         engine_bin, "pred",
         "-i", predict_input,
         "-o", out_dir,
         "-n", model_name,
-        "--use_msa", "true",
+        "--use_msa", msa_flag,
         "--use_default_params", "true",
     ]
     if checkpoint_dir:
