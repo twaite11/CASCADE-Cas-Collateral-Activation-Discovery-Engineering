@@ -220,26 +220,39 @@ def identify_hepn_domains(conn):
             break
             
         for seq_id, sequence in batch:
+            all_matches = list(motif.finditer(sequence))
+            n_motifs = len(all_matches)
+
+            if n_motifs > 8:
+                update_cursor.execute('''
+                    UPDATE variants SET status = 'failed', reason = ? WHERE sequence_id = ?
+                ''', (f"Too many R...H motifs ({n_motifs}); likely not a clean Cas13.", seq_id))
+                processed += 1
+                continue
+
             pair = _select_hepn_pair(sequence, motif)
             
             if pair is None:
-                matches = list(motif.finditer(sequence))
                 update_cursor.execute('''
                     UPDATE variants SET status = 'failed', reason = ? WHERE sequence_id = ?
-                ''', (f"Only {len(matches)} HEPN motifs found (or no valid pair).", seq_id))
+                ''', (f"Only {n_motifs} HEPN motifs found (or no valid pair).", seq_id))
             else:
                 hepn1_center, hepn2_center = pair
+
+                reason = "HEPN anchored"
+                if n_motifs > 4:
+                    reason = f"HEPN anchored (warning: {n_motifs} R...H motifs — verify 2 are catalytic)"
                 
                 update_cursor.execute('''
                     UPDATE variants SET 
                         hepn1_start = ?, hepn1_end = ?, 
                         hepn2_start = ?, hepn2_end = ?, 
-                        status = 'success', reason = 'HEPN anchored'
+                        status = 'success', reason = ?
                     WHERE sequence_id = ?
                 ''', (
                     max(0, hepn1_center - 30), hepn1_center + 80,
                     max(hepn1_center + 80, hepn2_center - 30), hepn2_center + 80,
-                    seq_id
+                    reason, seq_id
                 ))
             processed += 1
             
