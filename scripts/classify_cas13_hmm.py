@@ -328,10 +328,38 @@ def classify_all(evalue_threshold: float = 1e-5):
              f"({high_conf} high confidence)")
     log.info(f"Report: {CLASSIFICATION_REPORT}")
 
+    _propagate_subtypes_to_metadata(report_rows)
+
     if not hmm_files:
         log.info("TIP: Download HEPN HMM profiles for stronger classification:")
         log.info(f"  mkdir -p {HMM_DIR}")
         log.info(f"  wget -O {HMM_DIR}/HEPN.hmm 'https://www.ebi.ac.uk/interpro/wwwapi/entry/pfam/PF05168?annotation=hmm'")
+
+
+def _propagate_subtypes_to_metadata(report_rows: list):
+    """Write subtype_guess into variant_domain_metadata.json so downstream
+    tools (protenix_eval, evolution_orchestrator) can use subtype-aware crRNA
+    assembly (orientation, spacer length)."""
+    if not METADATA_JSON.exists():
+        log.info(f"No metadata JSON at {METADATA_JSON}; skipping subtype propagation.")
+        return
+
+    with open(METADATA_JSON) as f:
+        metadata = json.load(f)
+
+    updated = 0
+    for row in report_rows:
+        sid = row["sequence_id"]
+        subtype = row.get("subtype", "unknown")
+        if sid in metadata:
+            if metadata[sid].get("subtype") != subtype:
+                metadata[sid]["subtype"] = subtype
+                updated += 1
+
+    if updated:
+        with open(METADATA_JSON, "w") as f:
+            json.dump(metadata, f, indent=2)
+        log.info(f"Propagated subtype to {updated} entries in {METADATA_JSON}")
 
 
 if __name__ == "__main__":
