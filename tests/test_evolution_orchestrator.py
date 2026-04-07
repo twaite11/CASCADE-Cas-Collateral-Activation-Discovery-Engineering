@@ -58,13 +58,14 @@ class TestComputeFitness:
 
 
 class TestEvolutionGym:
-    """Test EvolutionGym."""
+    """Test EvolutionGym with relative fitness normalization."""
 
-    def test_register_and_bias(self, tmpdir, monkeypatch):
+    def test_register_flush_and_bias(self, tmpdir, monkeypatch):
         monkeypatch.setattr(orch, "GYM_DIR", str(tmpdir / "gym"))
         gym = EvolutionGym()
         gym.register_evaluation("v1", ["10_P", "20_A"], 30, 10, 0.9, is_full_ternary=True)
         gym.register_evaluation("v2", ["10_P", "30_G"], 28, 11, 0.85, is_full_ternary=True)
+        gym.flush_generation()
         assert len(gym.generation_history) == 2
         assert "10_P" in gym.mutation_weights
         bias_file = gym.generate_mpnn_bias_matrix(1)
@@ -72,12 +73,32 @@ class TestEvolutionGym:
         data = json.loads(Path(bias_file).read_text())
         assert "10" in data
 
+    def test_relative_fitness_produces_positive_weights(self, tmpdir, monkeypatch):
+        """Even with deeply negative absolute fitness, the best variant should
+        get positive mutation weights via relative normalization."""
+        monkeypatch.setattr(orch, "GYM_DIR", str(tmpdir / "gym"))
+        gym = EvolutionGym()
+        gym.register_evaluation("good", ["50_L"], 40, 30, 0.13, is_full_ternary=False)
+        gym.register_evaluation("bad", ["50_A"], 40, 50, 0.11, is_full_ternary=False)
+        gym.flush_generation()
+        assert gym.mutation_weights["50_L"] > 0, "Best variant's mutation should have positive weight"
+        assert gym.mutation_weights["50_A"] < 0, "Worst variant's mutation should have negative weight"
+
+    def test_baseline_reference_shifts_center(self, tmpdir, monkeypatch):
+        """When baseline fitness is set, weights are relative to that reference."""
+        monkeypatch.setattr(orch, "GYM_DIR", str(tmpdir / "gym"))
+        gym = EvolutionGym()
+        gym.set_baseline_fitness(-50.0)
+        gym.register_evaluation("better", ["10_W"], 30, 10, 0.9, is_full_ternary=True)
+        gym.flush_generation()
+        assert gym.mutation_weights["10_W"] > 0, "Variant better than baseline should be positive"
+
     def test_bias_clipping(self, tmpdir, monkeypatch):
         monkeypatch.setattr(orch, "GYM_DIR", str(tmpdir / "gym"))
         gym = EvolutionGym()
-        # Extremely good fitness to test clipping
         for i in range(20):
             gym.register_evaluation(f"v{i}", ["100_X"], 50, 5, 0.99, is_full_ternary=True)
+        gym.flush_generation()
         bias_file = gym.generate_mpnn_bias_matrix(1)
         data = json.loads(Path(bias_file).read_text())
         assert data["100"]["X"] <= 5.0 and data["100"]["X"] >= -5.0

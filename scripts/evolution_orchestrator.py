@@ -184,38 +184,79 @@ def compute_fitness(off_dist, on_dist, iptm_score, af2_ig_score, is_full_ternary
 
 
 class EvolutionGym:
-    """Active Learning Environment for Directed Evolution."""
+    """Active Learning Environment for Directed Evolution.
+
+    Uses *relative* fitness: within each generation, the best variant gets
+    a positive weight and the worst gets a negative weight.  This ensures
+    the bias matrix contains actionable signal even when all absolute
+    fitness values are deeply negative (e.g. early exploration).
+    """
     def __init__(self):
         os.makedirs(GYM_DIR, exist_ok=True)
         self.mutation_weights = {}
         self.generation_history = []
+        self.baseline_fitness = None
+        self._pending_evals = []
+
+    def set_baseline_fitness(self, fitness):
+        """Set the reference fitness from the unmodified enzyme (Gen 0)."""
+        self.baseline_fitness = fitness
+        log.info(f"  [RL] Baseline fitness reference set to {fitness:.2f}")
 
     def register_evaluation(self, variant_id, mutations, off_dist, on_dist, iptm_score, af2_ig_score=0.0, is_full_ternary=False, offtarget_by_mismatch=None):
-        """Records the performance of a variant's specific mutations."""
+        """Buffer variant evaluation for end-of-generation relative scoring."""
         fitness = compute_fitness(off_dist, on_dist, iptm_score, af2_ig_score, is_full_ternary, offtarget_by_mismatch)
 
         self.generation_history.append({
             "variant": variant_id, "fitness": fitness, "mutations": mutations
         })
+        self._pending_evals.append({"mutations": mutations, "fitness": fitness})
 
-        for mut in mutations:
-            if mut not in self.mutation_weights:
-                self.mutation_weights[mut] = 0.0
-            self.mutation_weights[mut] = (self.mutation_weights[mut] * 0.5) + (fitness * 0.5)
+    def flush_generation(self):
+        """Normalize pending evaluations to relative fitness and update weights.
+
+        Relative fitness = (variant_fitness - generation_mean) / spread.
+        If a baseline reference exists, center on that instead of the mean.
+        This guarantees variants better than average get positive weights
+        and worse-than-average get negative — regardless of absolute scale.
+        """
+        if not self._pending_evals:
+            return
+
+        fitnesses = [e["fitness"] for e in self._pending_evals]
+        if self.baseline_fitness is not None:
+            center = self.baseline_fitness
+        else:
+            center = sum(fitnesses) / len(fitnesses)
+
+        spread = max(fitnesses) - min(fitnesses) if len(fitnesses) > 1 else 1.0
+        spread = max(spread, 1.0)
+
+        for ev in self._pending_evals:
+            relative = (ev["fitness"] - center) / spread
+            for mut in ev["mutations"]:
+                if mut not in self.mutation_weights:
+                    self.mutation_weights[mut] = 0.0
+                self.mutation_weights[mut] = (self.mutation_weights[mut] * 0.5) + (relative * 0.5)
+
+        n_pos = sum(1 for w in self.mutation_weights.values() if w > 0)
+        n_neg = sum(1 for w in self.mutation_weights.values() if w < 0)
+        log.info(f"  [RL] Flushed {len(self._pending_evals)} evals → "
+                 f"{n_pos} positive / {n_neg} negative mutation weights")
+        self._pending_evals = []
 
     def generate_mpnn_bias_matrix(self, generation_num):
         """Converts weights into a physical bias matrix for PXDesign/ProteinMPNN."""
         bias_matrix = {}
         for mut, weight in self.mutation_weights.items():
             parts = mut.split('_')
-            # Only substitutions: exactly "pos_AA" (len==2). Skip deletions and insertions ("pos_AA_ins").
             if len(parts) == 2:
                 pos = parts[0]
                 aa = parts[1]
                 if aa != "del" and len(aa) == 1 and aa.isalpha():
                     if pos not in bias_matrix:
                         bias_matrix[pos] = {}
-                    bias_matrix[pos][aa] = float(np.clip(weight / 10.0, -5.0, 5.0))
+                    bias_matrix[pos][aa] = float(np.clip(weight, -5.0, 5.0))
             
         bias_file = os.path.join(GYM_DIR, f"mpnn_bias_gen_{generation_num}.json")
         with open(bias_file, 'w') as f:
@@ -479,6 +520,78 @@ def _resolve_best_baseline(best_name, best_fasta, best_hf_pdb, crrna_lookup_id, 
     return None
 
 
+def _evaluate_baseline_reference(baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata, gym):
+    """
+    Evaluate the unmodified baseline enzyme (Gen 0) to establish a reference
+    fitness. This gives the RL system a real zero-point: variants that improve
+    on the starting enzyme get positive relative weights, worse ones get negative.
+
+    Returns the baseline fitness, or None if evaluation fails.
+    """
+    log.info("=" * 60)
+    log.info(f"Gen 0 — Evaluating unmodified baseline: {baseline_id}")
+    log.info("=" * 60)
+
+    seq = _read_baseline_sequence(baseline_id, baseline_fasta_path)
+    if not seq:
+        log.warning(f"Could not read baseline sequence for {baseline_id}")
+        return None
+
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".fasta", delete=False, prefix="baseline_") as f:
+        f.write(f">{baseline_id}\n{seq}\n")
+        tmp_fasta = f.name
+
+    try:
+        h1_idx, h2_idx = get_catalytic_histidine_indices(tmp_fasta)
+        if h1_idx is None or h2_idx is None:
+            log.warning(f"Could not find HEPN motifs in baseline {baseline_id}")
+            return None
+
+        off_json, on_json = generate_evaluation_jsons(
+            tmp_fasta, baseline_id, METADATA_FILE, FAST_EVAL_DIR, crrna_lookup_id=crrna_lookup_id
+        )
+
+        off_pdb, _ = run_protenix_inference(
+            off_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
+        )
+        on_pdb, _ = run_protenix_inference(
+            on_json, FAST_EVAL_DIR, model_tier="mini", seqres_db_path=SEQRES_DB_PATH
+        )
+
+        off_dist = calculate_hepn_shift(off_pdb, h1_idx, h2_idx)
+        on_dist = calculate_hepn_shift(on_pdb, h1_idx, h2_idx)
+
+        mini_on_summary = None
+        try:
+            base_name = os.path.basename(on_json).replace(".json", "")
+            _, mini_on_summary = _find_mini_summary(FAST_EVAL_DIR, baseline_id, "ON")
+        except Exception:
+            pass
+        if mini_on_summary:
+            scores = extract_protenix_scores(mini_on_summary)
+            iptm = scores["iptm"] if scores["iptm"] > 0.0 else 0.4
+            af2_ig = scores["af2_ig"]
+        else:
+            iptm, af2_ig = 0.4, 0.0
+
+        fitness = compute_fitness(off_dist, on_dist, iptm, af2_ig, False, None)
+        log.info(
+            f"[Gen 0] Baseline {baseline_id}: OFF={off_dist:.1f}A ON={on_dist:.1f}A "
+            f"delta={off_dist - on_dist:.1f}A iptm={iptm:.3f} fitness={fitness:.2f}"
+        )
+        return fitness
+
+    except Exception as e:
+        log.warning(f"Baseline evaluation failed for {baseline_id}: {e}")
+        return None
+    finally:
+        try:
+            os.unlink(tmp_fasta)
+        except OSError:
+            pass
+
+
 def main_evolution_loop():
     log.info("Initializing SwitchBlade Active Learning Evolution Loop...")
     os.makedirs(FAST_EVAL_DIR, exist_ok=True)
@@ -517,11 +630,26 @@ def main_evolution_loop():
     bias_file = None
     mismatch_seqs = generate_mismatch_sequences(TARGET_REGION, mismatch_counts=MISMATCH_COUNTS, num_per_count=1, seed=42)
 
-    # --- Global best tracking: always start from the best protein discovered so far ---
     # Tuple: (name, fasta_path, fitness, off, on, iptm, af2_ig, pdb_path, crrna_lookup_id)
     global_best = None
 
     while True:
+        # --- Gen 0: evaluate the unmodified baseline enzyme as a reference ---
+        baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id = baseline
+        baseline_ref_fitness = _evaluate_baseline_reference(
+            baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata, gym,
+        )
+        if baseline_ref_fitness is not None:
+            gym.set_baseline_fitness(baseline_ref_fitness)
+            if global_best is None or baseline_ref_fitness > global_best[2]:
+                log.info(f"Baseline {baseline_id} fitness={baseline_ref_fitness:.1f} — setting as initial global best")
+                resolved = _resolve_best_baseline(baseline_id, baseline_fasta_path, baseline_pdb_path, crrna_lookup_id, domain_metadata)
+                if resolved:
+                    global_best = (
+                        baseline_id, baseline_fasta_path, baseline_ref_fitness,
+                        0, 0, 0, 0, baseline_pdb_path, crrna_lookup_id,
+                    )
+
         for generation_counter in range(1, MAX_GENERATIONS + 1):
             baseline_id, baseline_pdb_path, baseline_fasta_path, crrna_lookup_id = baseline
 
@@ -733,7 +861,8 @@ def main_evolution_loop():
                 log.info(f"Generation best ({gen_best_fitness:.1f}) did not beat global best ({global_best[2]:.1f}); reverting to global best")
                 baseline = (global_best[0], global_best[7], global_best[1], global_best[8])
 
-            # Update RL bias matrix for next generation
+            # Flush relative-fitness weights and update bias matrix
+            gym.flush_generation()
             if gym.mutation_weights:
                 bias_file = gym.generate_mpnn_bias_matrix(generation_counter)
 
