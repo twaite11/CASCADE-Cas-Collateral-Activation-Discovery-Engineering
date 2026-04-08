@@ -29,10 +29,10 @@
 
 We discover, validate, and engineer novel Cas13e-like proteins from metagenomic dark matter to function as **highly specific biological suicide switches**:
 
-| State | HEPN Domains | Behavior |
-|:------|:-------------|:---------|
-| 🟢 **Healthy cell** (OFF) | **> 25 Å apart** — catalytically inert | Completely dormant. Zero leakiness. |
-| 🔴 **Tumor cell** (ON) | **< 12 Å apart** — catalytically aligned | Massive collateral cleavage → programmed cell death |
+| State | HEPN Domains (His NE2-NE2) | Behavior |
+|:------|:----------------------------|:---------|
+| 🟢 **Healthy cell** (OFF) | **≥ 18 Å apart** — catalytically inert | Completely dormant. Zero leakiness. |
+| 🔴 **Tumor cell** (ON) | **≤ 12 Å apart** — catalytically aligned | Massive collateral cleavage → programmed cell death |
 
 The switch is triggered **only** when the engineered Cas13 detects and binds a **tumor-specific fusion RNA** (e.g., BCR-ABL, EWS-FLI1). The conformational change snaps the HEPN domains together, transforming a dormant ribonucleoprotein into a lethal RNA-shredding machine — strictly within the tumor.
 
@@ -67,62 +67,177 @@ The thermodynamic OFF→ON transition is controlled by **Inter-Domain Linkers (I
 
 ## 🏗️ Pipeline Architecture
 
-CASCADE operates in two phases. Phase 1 bootstraps validated baselines from raw metagenomic data. Phase 2 runs an autonomous **reinforcement-learning (RL) driven evolution loop** that continuously designs, evaluates, and learns from structural predictions.
+CASCADE operates in three phases. Phase 0 discovers novel Cas13 enzymes from metagenomic dark matter. Phase 1 bootstraps validated baselines with native crRNAs and structural screening. Phase 2 runs an autonomous **reinforcement-learning (RL) driven evolution loop** that continuously designs, evaluates, and learns from structural predictions.
 
 Structural evaluation is powered by **[Cattle-Prod](https://github.com/twaite11/cattle-prod)** — a Rust-native reimplementation of Protenix that compiles to a single binary with zero Python runtime overhead. The compound speedup on CPU-bound stages (parsing, tokenization, featurization, scoring) means more generations explored per GPU-hour.
 
 ```
-  ┌─────────────────────────────────────────────────────────────┐
-  │  PHASE 1: Bootstrap                                         │
-  │  Raw FASTAs → Parse & HEPN-anchor → Cattle-Prod screen     │
-  │  → Validated baselines with native crRNAs                   │
-  └────────────────────────┬────────────────────────────────────┘
-                           ▼
-  ┌─────────────────────────────────────────────────────────────┐
-  │  PHASE 2: Active Learning Evolution Loop                    │
-  │                                                             │
-  │  ┌──────────┐    ┌─────────────┐    ┌──────────┐           │
-  │  │ PXDesign │───▶│ Cattle-Prod │───▶│ Fitness  │           │
-  │  │ Generate │    │  ⚡ (Rust)  │    │  Score   │           │
-  │  └────▲─────┘    └─────────────┘    └────┬─────┘           │
-  │       │                                  │                  │
-  │       │    ┌──────────────────┐          │                  │
-  │       └────│  RL Bias Matrix  │◀─────────┘                  │
-  │            │  (EvolutionGym)  │                              │
-  │            └──────────────────┘                              │
-  │                                                             │
-  │  Global Best Tracking: evolution ALWAYS proceeds from the   │
-  │  highest-fitness protein discovered so far — never regresses│
-  └─────────────────────────────────────────────────────────────┘
+ ┌──────────────────────────────────────────────────────────────────────────────┐
+ │  PHASE 0: Metagenomic Discovery                                             │
+ │                                                                             │
+ │  Raw Contigs (NCBI/SRA)                                                     │
+ │       │                                                                     │
+ │       ▼                                                                     │
+ │  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐              │
+ │  │ DIAMOND  │───▶│   ORF    │───▶│ DIAMOND  │───▶│   HMM    │              │
+ │  │ BLASTX   │    │ Extract  │    │ BLASTP   │    │ Classify │              │
+ │  │ (6-frame)│    │ (±strand)│    │ (confirm)│    │ (subtype)│              │
+ │  └──────────┘    └──────────┘    └──────────┘    └────┬─────┘              │
+ │                                                       │                     │
+ │       ┌───────────────────────────────────────────────┘                     │
+ │       ▼                                                                     │
+ │  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐              │
+ │  │  MinCED  │───▶│    DR    │───▶│ Protein  │───▶│ Dedup +  │              │
+ │  │  CRISPR  │    │ Assign + │    │ Validate │    │ Rank by  │              │
+ │  │  Arrays  │    │ 5-Tier   │    │ (QC +    │    │ Confid-  │              │
+ │  │ Detection│    │ crRNA    │    │  HEPN    │    │ ence     │──▶ Phase 1   │
+ │  │          │    │ Discovery│    │  Archit.)│    │ (H/M/L)  │              │
+ │  └──────────┘    └──────────┘    └──────────┘    └──────────┘              │
+ │                                                                             │
+ │  Confidence tiers:                                                          │
+ │    HIGH   = Cas13 BLAST hit + adjacent CRISPR array + dual HEPN motifs     │
+ │    MEDIUM = Cas13 BLAST hit + dual HEPN (no adjacent array)                │
+ │    LOW    = Dual HEPN only (exploratory)                                    │
+ └──────────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     ▼
+ ┌──────────────────────────────────────────────────────────────────────────────┐
+ │  PHASE 1: Bootstrap Baselines                                               │
+ │                                                                             │
+ │  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐              │
+ │  │ Parse &  │───▶│ HMM      │───▶│ Fix crRNA│───▶│ Structur-│              │
+ │  │ Annotate │    │ Classify │    │ Assign-  │    │ al Screen│              │
+ │  │ (SQLite +│    │ (subtype │    │ ments    │    │ (mini    │              │
+ │  │  HEPN    │    │  + HEPN  │    │ (offline/│    │  fold)   │              │
+ │  │  anchor) │    │  PF05168)│    │  fetch)  │    │          │              │
+ │  └──────────┘    └──────────┘    └──────────┘    └────┬─────┘              │
+ │                                                       │                     │
+ │       ┌───────────────────────────────────────────────┘                     │
+ │       ▼                                                                     │
+ │  ┌──────────┐    ┌──────────┐                                               │
+ │  │ MSA Re-  │───▶│ Validate │                                               │
+ │  │ run Top  │    │ CRISPR   │──▶ Validated baselines                        │
+ │  │ N (base  │    │ Repeats  │    with native crRNAs                         │
+ │  │  model)  │    │ (RNAfold)│    + Phase 1 structures                       │
+ │  └──────────┘    └──────────┘                                               │
+ └──────────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     ▼
+ ┌──────────────────────────────────────────────────────────────────────────────┐
+ │  PHASE 2: Active Learning Evolution Loop                                    │
+ │                                                                             │
+ │  For each lineage (parallel workers with GPU lock):                         │
+ │                                                                             │
+ │  ┌────────────────────────────────────────────────────────────┐             │
+ │  │ Gen 0: Baseline Reference                                  │             │
+ │  │   Evaluate unmodified enzyme → set RL fitness baseline     │             │
+ │  └────────────────────┬───────────────────────────────────────┘             │
+ │                       ▼                                                     │
+ │  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐             │
+ │  │ PXDesign │───▶│  HEPN    │───▶│  RL Bias │───▶│ Protenix │             │
+ │  │ Backbone │    │ Stitch + │    │  Apply   │    │ Mini OFF │             │
+ │  │(Gen 1) or│    │ Resolve  │    │ (linker  │    │ + ON     │             │
+ │  │ MPNN Re- │    │ X → G/WT │    │  regions │    │ eval     │             │
+ │  │fine(Gen2+│    │          │    │  only)   │    │          │             │
+ │  └──────────┘    └──────────┘    └──────────┘    └────┬─────┘             │
+ │                                                       │                    │
+ │       ┌───────────────────────────────────────────────┘                    │
+ │       ▼                                                                    │
+ │  ┌──────────┐         ┌──────────┐    ┌──────────┐    ┌──────────┐        │
+ │  │ HEPN 3D  │──pass──▶│ Protenix │───▶│ Off-tgt  │───▶│ Fitness  │        │
+ │  │ Distance │         │ Base     │    │ Specific.│    │ Score    │        │
+ │  │ Filter   │         │ Ternary  │    │ (1/2/3mm │    │ (compos- │        │
+ │  │ OFF≥18Å  │         │ Complex  │    │ penalty) │    │  ite)    │        │
+ │  │ ON ≤12Å  │         │ Eval     │    │          │    │          │        │
+ │  └──────────┘         └──────────┘    └──────────┘    └────┬─────┘        │
+ │       │ fail                                               │               │
+ │       ▼                                                    ▼               │
+ │  Score with                                          ┌──────────┐          │
+ │  mini metrics                                        │Evolution │          │
+ │  (no base eval)────────────────────────────────────▶│  Gym RL  │          │
+ │                                                      │ (relative│          │
+ │  ┌──────────┐    ┌──────────┐    ┌──────────┐       │  fitness │          │
+ │  │Population│◀───│ Global   │◀───│ RL Bias  │◀──────│  weights)│          │
+ │  │ Update   │    │ Best     │    │ Matrix   │       └──────────┘          │
+ │  │ (top-K   │    │ Tracking │    │ Export   │                              │
+ │  │ tourney) │    │ (never   │    │ (PSSM →  │                              │
+ │  │          │    │ regress) │    │  MPNN)   │                              │
+ │  └────┬─────┘    └──────────┘    └──────────┘                              │
+ │       │                                                                    │
+ │       ▼                                                                    │
+ │  ┌──────────────────────────────────────────────┐                          │
+ │  │ Stagnation? ──yes──▶ Abandon lineage         │                          │
+ │  │ Elite found? ──yes──▶ Save + next lineage     │                          │
+ │  │ Otherwise ──────────▶ Next generation (loop)  │                          │
+ │  └──────────────────────────────────────────────┘                          │
+ └──────────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     ▼
+                          ┌──────────────────────┐
+                          │  outputs/             │
+                          │  optimized_switches/  │
+                          │   *_optimal.fasta     │
+                          │   *_ternary.cif       │
+                          │   *_crRNA.fasta       │
+                          │  rl_gym_data/          │
+                          │   rl_training.jsonl    │
+                          │  switch_report.csv     │
+                          └──────────────────────┘
 ```
 
 > 📊 **[Open the interactive workflow diagram →](workflow_diagram.html)** for the full node-by-node breakdown with color-coded phases.
+
+### Phase 0 — Metagenomic Discovery
+
+| Step | Script | What It Does |
+|:-----|:-------|:-------------|
+| **0a** | `mining_v2.py` | Full discovery pipeline: DIAMOND BLASTX on raw contigs → 6-frame ORF extraction (both strands) → HMM classification → MinCED CRISPR array detection → DR assignment → confidence-ranked hits. |
+| **0b** | `blast_candidates.py` | DIAMOND BLASTP confirmation of extracted ORFs against comprehensive Cas13 reference DB (8 characterized proteins across Cas13a/b/d/bt subtypes). |
+| **0c** | `classify_cas13_hmm.py` | HMM domain classification using Pfam HEPN (PF05168) + Cas13 family-specific diagnostic motifs. Assigns subtype (a/b/d/X/Y) and validates dual-HEPN architecture. |
+| **0d** | `validate_proteins.py` | Protein QC: length range, composition, low-complexity filter, HEPN motif spacing (150-600 residues), alpha-helical propensity, charge profile. |
+| **0e** | `discover_crrna.py` | 5-tier iterative crRNA DR discovery: (1) proximity CRISPR detection, (2) mining DR salvage, (3) known DR library screen via Protenix ipTM, (4) broader metagenome search, (5) computational stem-loop design + mutagenesis. |
+| **0f** | `fix_crrna_assignments.py` | Replace naive k-mer "repeats" (often tRNAs) with properly detected CRISPR direct repeats. Fetches source contigs, detects arrays, filters tRNA-like sequences, re-assigns DRs by proximity. |
 
 ### Phase 1 — Bootstrap Baselines
 
 | Step | Script | What It Does |
 |:-----|:-------|:-------------|
-| **1a** | `01_parse_and_annotate.py` | Parse FASTA + CSV into SQLite DB. Anchor HEPN1/HEPN2 domains via `R.{4,6}H` motif. Generate prediction-compatible JSONs. |
-| **1b** | `02_run_screening.sh` | GPU-accelerated Cattle-Prod mini structural screen. Filters hits that can't form bilobed structures or bind crRNA. |
-| **1c** | `02b_rerun_top_with_msa.sh` | *(Optional)* Re-run top N baselines with MSA for higher-quality seed structures. |
-| **1d** | `validate_crispr_repeats.py` | *(Optional)* Validate CRISPR repeats via RNAfold. Outputs `validated_baseline_ids.txt` to restrict evolution. |
+| **1a** | `01_parse_and_annotate.py` | Parse FASTA + CSV into SQLite DB. Anchor HEPN1/HEPN2 domains via `R.{4,6}H` motif with `_select_hepn_pair()` (positional + separation constraints, not naive first/last). Generate prediction-compatible JSONs with protein + crRNA + target RNA. |
+| **1b** | `classify_cas13_hmm.py` | *(If not run in Phase 0)* HMM subtype classification and HEPN domain validation. |
+| **1c** | `fix_crrna_assignments.py --offline` | Validate/repair crRNA DR assignments using improved filters (tRNA exclusion, array structure). Updates `variant_domain_metadata.json`. |
+| **1d** | `02_run_screening.sh` | GPU-accelerated Cattle-Prod/Protenix mini structural screen. Filters hits that can't form bilobed structures or bind crRNA. Generates Phase 1 structures in `outputs/phase1_screening/`. |
+| **1e** | `02b_rerun_top_with_msa.sh` | *(Optional)* Re-run top N baselines with MSA-enhanced base model for higher-quality seed structures and more reliable ipTM/pTM scores. |
+| **1f** | `validate_crispr_repeats.py` | *(Optional)* Validate CRISPR repeats via RNAfold stem-loop structure. Outputs `validated_baseline_ids.txt` to restrict evolution to structurally validated DRs. |
 
 ### Phase 2 — Active Learning Evolution Loop
 
-The evolution orchestrator (`evolution_orchestrator.py`) runs an autonomous loop:
+The evolution orchestrator (`evolution_orchestrator.py`) runs an autonomous loop with parallel workers, tournament selection, and closed-loop RL:
 
 ```
-For each generation:
-  1. GENERATE  → PXDesign designs linker variants (REC + HEPN frozen)
-  2. STITCH    → Wild-type HEPN1/HEPN2 grafted into designed linkers
-  3. RESOLVE   → Unknown residues (X) replaced from baseline or Glycine
-  4. BIAS      → RL bias matrix applied to linker regions (closed-loop RL)
-  5. EVALUATE  → Cattle-Prod predicts OFF-state and ON-state structures
-  6. MEASURE   → 3D HEPN distance (Å) + ipTM + AF2-IG confidence scores
-  7. TEST      → Off-target specificity (1/2/3-mismatch progressive penalty)
-  8. SCORE     → Composite fitness: HEPN_shift + ipTM×50 + AF2-IG×20 − penalties
-  9. LEARN     → EvolutionGym updates mutation weights → new bias matrix
-  10. ADVANCE  → Global best protein becomes next baseline (never regresses)
+Gen 0 — Baseline Reference:
+  1. EVALUATE  → Protenix mini predicts unmodified enzyme OFF + ON structures
+  2. MEASURE   → 3D HEPN NE2-NE2 distance + ipTM + AF2-IG scores
+  3. BASELINE  → Set RL fitness reference (EvolutionGym centers rewards here)
+
+For each generation (1 → MAX_GENERATIONS):
+  1. SELECT    → Tournament selection picks parent from population (top-K pool)
+  2. GENERATE  → Gen 1: PXDesign diffusion → novel backbone geometry
+                 Gen 2+: MPNN iterative refinement on cached backbone
+                          (exploration schedule unfreezes 10-50% of linker positions)
+  3. STITCH    → Wild-type HEPN1/HEPN2 catalytic domains grafted into designed linkers
+  4. RESOLVE   → Unknown residues (X) replaced from baseline or Glycine fallback
+  5. BIAS      → RL bias matrix applied as PSSM to linker regions (closed-loop RL)
+  6. EVALUATE  → Protenix mini predicts OFF-state and ON-state structures
+  7. MEASURE   → 3D HEPN His NE2 distance (Å) + ipTM + AF2-IG confidence scores
+  8. FILTER    → OFF ≥ 18Å (dormant) AND ON ≤ 12Å (active) → passes to base eval
+  9. PROMOTE   → Passing variants: Protenix base ternary complex (protein+crRNA+target)
+  10. TEST     → Off-target specificity: 1/2/3-mismatch guides (progressive penalty)
+  11. SCORE    → Composite fitness: HEPN_shift + ipTM×50 + AF2-IG×20 − penalties
+  12. LEARN    → EvolutionGym: relative fitness normalization → mutation weight update
+  13. EXPORT   → Bias matrix → mpnn_bias_gen_X.json (position→AA PSSM for MPNN)
+  14. ADVANCE  → Population merge (top-K survive). Global best → next baseline.
+  15. CHECK    → Elite found (ipTM≥0.85, AF2-IG≥0.80, ON≤12Å)? → save + next lineage
+                 Stagnated (4 gens no improvement)? → abandon lineage
 ```
 
 <details>
@@ -137,10 +252,10 @@ fitness = (off_dist − on_dist) − (MIN_OFF − MAX_ON)     # HEPN conformatio
         − 5.0 if fallback variant                          # Penalty for stitch failures
 ```
 
-**Thresholds:**
-- OFF distance ≥ 25 Å (catalytically inert when dormant)
-- ON distance ≤ 12 Å (catalytically aligned when activated)
-- Elite: ipTM ≥ 0.85, AF2-IG ≥ 0.80, ON ≤ 12 Å
+**Thresholds (NE2-NE2 measurement):**
+- OFF distance ≥ 18.0 Å (catalytically inert when dormant)
+- ON distance ≤ 12.0 Å (catalytically aligned when activated)
+- Elite: ipTM ≥ 0.85, AF2-IG ≥ 0.80, ON ≤ 12.0 Å
 
 </details>
 
@@ -223,21 +338,28 @@ source scripts/cascade_env.sh
 ### Run
 
 ```bash
-# Place your data in data/mined_hits/
-#   deep_hits_*.fasta     — Cas13e-like protein sequences
-#   deep_hits_*_metadata.csv — Metadata with crRNA repeat domains
-
 cd scripts
 
-# Phase 1: Parse → Screen
-python 01_parse_and_annotate.py
-./02_run_screening.sh
+# ── Phase 0: Discover novel Cas13 from metagenomic contigs ──
+# Download contigs into data/new_contigs/, then:
+python mining_v2.py --contigs ../data/new_contigs/*.fasta --output-dir ../outputs/mining_v2
+python blast_candidates.py                        # BLASTP confirmation
+python classify_cas13_hmm.py                      # HMM subtype assignment
+python validate_proteins.py                       # Protein QC
+# Place validated hits in data/mined_hits/ (FASTA + metadata CSV)
 
-# Phase 2: Evolution
-python evolution_orchestrator.py
+# ── Phase 1: Bootstrap validated baselines ──
+python 01_parse_and_annotate.py                   # SQLite + HEPN anchoring + JSONs
+python classify_cas13_hmm.py                      # Subtype classification (if not done above)
+python fix_crrna_assignments.py --offline          # Repair crRNA DR assignments
+./02_run_screening.sh                             # Structural screen (mini model)
+./02b_rerun_top_with_msa.sh 4                     # MSA re-run top 4 (optional)
+
+# ── Phase 2: Active learning evolution ──
+CASCADE_WORKERS=1 python evolution_orchestrator.py
 ```
 
-Or run everything at once:
+Or run Phases 1+2 at once:
 
 ```bash
 ./scripts/run_pipeline.sh 2>&1 | tee "logs/cascade_$(date +%Y%m%d_%H%M%S).log"
@@ -295,9 +417,13 @@ CASCADE/
 ├── 📁 dashboard_frontend/              # Auto-refresh web UI
 │
 ├── 📁 data/
-│   └── 📁 mined_hits/                  # Input: FASTAs + metadata CSVs
-│       ├── deep_hits_*.fasta           #   Cas13e-like protein ORFs
-│       └── deep_hits_*_metadata.csv    #   SRA accessions + crRNA k-mers
+│   ├── 📁 mined_hits/                  # Input: validated Cas13 FASTAs + metadata CSVs
+│   │   ├── deep_hits_*.fasta           #   Protein ORFs from mining pipeline
+│   │   └── deep_hits_*_metadata.csv    #   Accessions, DRs, confidence tiers
+│   ├── 📁 hmm/                         # HMM profiles for domain classification
+│   │   └── HEPN.hmm                    #   Pfam PF05168 HEPN domain profile
+│   ├── 📁 new_contigs/                 # Raw metagenomic contigs (NCBI/SRA downloads)
+│   └── cas13_reference_db.fasta        # Comprehensive Cas13 reference DB (8 proteins, 4 subtypes)
 │
 ├── 📁 rust/                            # Optional Rust accelerators (cargo build --release)
 │   ├── cascade_ingest/                 #   FASTA/CSV → SQLite + HEPN scanning + JSON gen
@@ -310,18 +436,29 @@ CASCADE/
 │   ├── 🔧 cascade_env.sh              # Source this to activate env + PXDESIGN_CMD
 │   ├── 🔧 run_pipeline.sh             # Full pipeline runner with logging
 │   │
-│   ├── 📜 01_parse_and_annotate.py     # Phase 1a: Ingest → SQLite DB + HEPN anchoring
-│   ├── 📜 02_run_screening.sh          # Phase 1b: Cattle-Prod mini structural screen
-│   ├── 📜 02b_rerun_top_with_msa.sh   # Phase 1c: Optional MSA re-run for top N
-│   ├── 📜 validate_crispr_repeats.py   # Phase 1d: Optional CRISPR repeat validation
+│   │── ── Phase 0: Metagenomic Discovery ──
+│   ├── 📜 mining_v2.py                # Full discovery: BLASTX → ORF extract → HMM → CRISPR → rank
+│   ├── 📜 blast_candidates.py          # DIAMOND BLASTP/BLASTX against Cas13 reference DB
+│   ├── 📜 classify_cas13_hmm.py        # HMM subtype classification (HEPN PF05168 + family motifs)
+│   ├── 📜 validate_proteins.py         # Protein QC: length, composition, HEPN architecture
+│   ├── 📜 discover_crrna.py            # 5-tier crRNA DR discovery (proximity → library → design)
+│   ├── 📜 fix_crrna_assignments.py     # Replace naive k-mers with real CRISPR DRs
 │   │
-│   ├── 📜 03_pxdesign_wrapper.py       # Variant generation (PXDesign + stitching + RL bias)
-│   ├── 📜 evolution_orchestrator.py    # Phase 2: Active learning master controller
+│   │── ── Phase 1: Bootstrap Baselines ──
+│   ├── 📜 01_parse_and_annotate.py     # Ingest → SQLite DB + HEPN anchoring + JSON generation
+│   ├── 📜 02_run_screening.sh          # Cattle-Prod/Protenix mini structural screen
+│   ├── 📜 02b_rerun_top_with_msa.sh   # MSA-enhanced base model re-run for top N
+│   ├── 📜 validate_crispr_repeats.py   # CRISPR repeat validation via RNAfold
+│   │
+│   │── ── Phase 2: Evolution Loop ──
+│   ├── 📜 03_pxdesign_wrapper.py       # PXDesign backbone + MPNN refinement + HEPN stitching
+│   ├── 📜 evolution_orchestrator.py    # Active learning master controller (EvolutionGym RL)
+│   ├── 📜 monitor_variants.py          # Live monitoring of evolution progress
 │   │
 │   └── 📁 utils/
-│       ├── 📜 protenix_eval.py         # ON/OFF payload generation + Cattle-Prod/Protenix inference
-│       ├── 📜 pdb_kinematics.py        # 3D HEPN distance + confidence score extraction
-│       └── 📜 hepn_structural_stitch.py # Graft WT HEPN domains into designed linkers
+│       ├── 📜 protenix_eval.py         # ON/OFF JSON payloads + Cattle-Prod/Protenix inference
+│       ├── 📜 pdb_kinematics.py        # 3D HEPN NE2 distance + ipTM/pTM/AF2-IG extraction
+│       └── 📜 hepn_structural_stitch.py # Graft WT HEPN catalytic domains into designed linkers
 │
 ├── 📁 tests/                           # 56 unit tests (no GPU required)
 │   ├── conftest.py                     # Shared fixtures
@@ -334,23 +471,28 @@ CASCADE/
 │   └── test_run_protenix_mocked.py
 │
 ├── 📁 metadata/                        # Generated at runtime
-│   ├── cas13_variants.db               #   SQLite database
-│   └── variant_domain_metadata.json    #   HEPN domain boundaries
+│   ├── cas13_variants.db               #   SQLite database (all candidates + annotations)
+│   └── variant_domain_metadata.json    #   HEPN domain boundaries + crRNA + subtype per variant
 │
-├── 📁 jsons/                           # Prediction input payloads (Cattle-Prod/Protenix format)
+├── 📁 jsons/                           # Protenix/Cattle-Prod input payloads (protein+crRNA+target)
 │
 └── 📁 outputs/
-    ├── phase1_screening/               # Baseline CIF/PDB structures
-    ├── generation_queue/               # PXDesign variant FASTAs
-    ├── fast_eval/                      # Mini-model OFF/ON screening
-    ├── high_fidelity_scoring/          # Base-model ternary predictions
+    ├── mining_v2/                      # Phase 0: mining results, BLAST outputs, CRISPR arrays
+    ├── phase1_screening/               # Phase 1: baseline CIF/PDB structures (mini model)
+    ├── backbone_cache/                 # Cached PXDesign backbones for MPNN refinement (Gen 2+)
+    ├── generation_queue/               # PXDesign/MPNN variant FASTAs per worker per generation
+    ├── fast_eval/                      # Mini-model OFF/ON structural screening
+    ├── high_fidelity_scoring/          # Base-model ternary complex predictions
     ├── rl_gym_data/                    # RL bias matrices + training dataset
-    │   ├── mpnn_bias_gen_X.json        #   Per-generation bias matrices
+    │   ├── mpnn_bias_gen_X.json        #   Per-generation PSSM bias matrices
     │   └── rl_training_dataset.jsonl   #   For DRAKES/ProteinMPNN post-training
-    └── optimized_switches/             # 🏆 Elite outputs
-        ├── *_optimal.fasta             #   Best protein sequences
-        ├── *_ternary_complex.cif       #   Predicted ternary structures
-        └── *_crRNA.fasta               #   Native crRNA sequences
+    ├── optimized_switches/             # Elite outputs
+    │   ├── *_optimal.fasta             #   Best engineered protein sequences
+    │   ├── *_ternary_complex.cif       #   Predicted 3D ternary structures
+    │   └── *_crRNA.fasta               #   Native crRNA sequences
+    ├── switch_report.csv               # Full variant-level scoring report (all generations)
+    ├── crrna_discovery_report.csv      # Phase 0: crRNA discovery results per tier
+    └── cas13_classification_report.csv # Phase 0: HMM classification results
 ```
 
 ---
@@ -440,24 +582,33 @@ These constants in `evolution_orchestrator.py` control the evolution:
 
 | Parameter | Default | Description |
 |:----------|:--------|:------------|
-| `MAX_GENERATIONS` | 20 | Generations per lineage |
-| `NUM_INITIAL_LINEAGES` | 5 | Parallel lineages from top Phase 1 baselines |
-| `MIN_OFF_DISTANCE` | 25.0 Å | Minimum HEPN distance for dormant state |
-| `MAX_ON_DISTANCE` | 12.0 Å | Maximum HEPN distance for active state |
+| `MAX_GENERATIONS` | 12 | Generations per lineage (env: `CASCADE_MAX_GENERATIONS`) |
+| `VARIANTS_PER_GEN` | 5 | Designs per generation (env: `CASCADE_VARIANTS_PER_GEN`) |
+| `NUM_WORKERS` | 3 | Parallel lineage workers (env: `CASCADE_WORKERS`) |
+| `POPULATION_SIZE` | 3 | Top-K survivors per generation |
+| `TOURNAMENT_SIZE` | 2 | Parent selection pressure |
+| `STAGNATION_LIMIT` | 4 | Gens without improvement before abandoning lineage |
+| `MIN_OFF_DISTANCE` | 18.0 Å | Minimum HEPN NE2-NE2 distance for dormant state |
+| `MAX_ON_DISTANCE` | 12.0 Å | Maximum HEPN NE2-NE2 distance for active state |
+| `MIN_IPTM_SCORE` | 0.85 | Elite threshold for interface prediction confidence |
+| `MIN_AF2_IG_SCORE` | 0.80 | Elite threshold for interface quality |
 | `FALLBACK_FITNESS_PENALTY` | 5.0 | Penalty for stitch-failure fallback variants |
-| `SLEEP_AFTER_PXDESIGN` | 5 s | GPU cooldown between PXDesign and Protenix |
-| `SLEEP_AFTER_PROTENIX` | 2 s | GPU cooldown between Protenix runs |
+| `SPECIFICITY_PENALTY_BASE` | 0.3 | Off-target penalty (scaled by mismatch count) |
 
 Environment variables:
 
 | Variable | Example | Description |
 |:---------|:--------|:------------|
+| `CASCADE_WORKERS` | `1` | Number of parallel worker processes (use 1 on single GPU) |
+| `CASCADE_MAX_GENERATIONS` | `12` | Override max generations per lineage |
+| `CASCADE_VARIANTS_PER_GEN` | `3` | Override designs per generation |
 | `EVAL_CMD` | `cattle-prod` or `/path/to/cattle-prod` | Structure prediction engine (auto-detected if on PATH) |
 | `PXDESIGN_CMD` | `/path/to/envs/pxdesign/bin/pxdesign` | Direct path to PXDesign binary in its conda env |
-| `CATTLE_PROD_MINI_CKPT` | `/workspace/models/cattle/mini` | Required for cattle-prod mini eval; directory with `model.safetensors` |
-| `CATTLE_PROD_BASE_CKPT` | `/workspace/models/cattle/base` | Required for cattle-prod base eval; directory with `model.safetensors` |
-| `CATTLE_PROD_BASE_MODEL` | `cattle_prod_base_default_v1.0.0` | Override Cattle-Prod base model name |
-| `CATTLE_PROD_STRICT` | `1` | `1` (default): fail fast on cattle-prod errors. `0`: fallback to Protenix with explicit warning. |
+| `PXDESIGN_SUBCOMMAND` | `pipeline` or `infer` | PXDesign CLI subcommand (auto-detected) |
+| `PROTEINMPNN_DIR` | `/workspace/ProteinMPNN` | Path to ProteinMPNN repo (auto-detected) |
+| `CATTLE_PROD_MINI_CKPT` | `/workspace/models/cattle/mini` | Cattle-prod mini checkpoint directory |
+| `CATTLE_PROD_BASE_CKPT` | `/workspace/models/cattle/base` | Cattle-prod base checkpoint directory |
+| `CATTLE_PROD_STRICT` | `1` | `1`: fail fast on errors. `0`: fallback to Protenix. |
 | `CUDA_VERSION` | `12.1` | CUDA version for dual-env setup |
 
 ---
@@ -497,19 +648,34 @@ Release gate before enabling strict cattle-prod mode:
 
 ## 🧬 Expected Input Data
 
-Place files in `data/mined_hits/`:
+### Option A: Start from raw contigs (recommended — full Phase 0)
+
+Place assembled metagenomic contigs in `data/new_contigs/`:
+
+```
+data/new_contigs/
+  SRR12345678_contigs.fasta      # Assembled contigs from SRA
+  GCA_012345678_genomic.fna      # NCBI genome assemblies
+  custom_metagenome.fasta        # Any assembled DNA sequences
+```
+
+Run `mining_v2.py` to discover Cas13 candidates automatically. The pipeline extracts ORFs, runs DIAMOND BLAST, detects CRISPR arrays, and produces validated hits in `data/mined_hits/`.
+
+### Option B: Start from pre-mined candidates (skip Phase 0)
+
+Place files directly in `data/mined_hits/`:
 
 <details>
 <summary><b>FASTA format</b> — <code>deep_hits_*.fasta</code></summary>
 
 ```
->Cas13a_positive_control
+>NZ_JAASWF010000012.1_ORF_f1_6252_HIGH
 MKISKVDHTRMAVAKGNQHRRDEIGKGLKEVLG...
->SRA_hit_001
+>NZ_JAAROR010000001.1_ORF_f1_65475_HIGH
 MFDKISKVREKNATLKQE...
 ```
 
-Each sequence is a predicted Cas13e-like protein ORF from metagenomic contigs.
+Each sequence is a Cas13 protein ORF. The suffix `_HIGH`/`_MEDIUM`/`_LOW` indicates confidence tier from Phase 0 mining.
 
 </details>
 
@@ -517,13 +683,15 @@ Each sequence is a predicted Cas13e-like protein ORF from metagenomic contigs.
 <summary><b>Metadata CSV format</b> — <code>deep_hits_*_metadata.csv</code></summary>
 
 ```csv
-sequence_id,repeat_domains,sra_accession,score
-Cas13a_positive_control,GATTTAGACTACCCCAAAAACGAAGGGGACTAAAAC,known,95.2
-SRA_hit_001,GTTGTAGCTCCCTTTCTCATTTCGCAGTGCTC|GTTGTAGCTCCCTTACTCATTTCGGAGTGCTC,SRR12345678,87.5
+sequence_id,repeat_domains,sra_accession,score,confidence,subtype,dr_distance_bp
+NZ_JAASWF010000012.1_ORF_f1_6252_HIGH,GTTGTAGCTCCCTTTCTCATTTCGCAGTGCTC,NZ_JAASWF,95.2,HIGH,cas13a,45
+NZ_JAPPSR010000004.1_ORF_f1_66985_HIGH,GTCGGCACCGCTCCCGTATAGCGGGG,NZ_JAPPSR,87.5,HIGH,cas13b,112
 ```
 
-- `repeat_domains`: pipe-separated CRISPR direct repeat k-mers
-- The pipeline selects the optimal repeat per baseline
+- `repeat_domains`: pipe-separated CRISPR direct repeat k-mers (from adjacent arrays)
+- `confidence`: HIGH (BLAST + CRISPR + dual HEPN), MEDIUM (BLAST + dual HEPN), LOW (dual HEPN only)
+- `dr_distance_bp`: distance from nearest CRISPR array to the Cas13 gene (38-112 bp is ideal)
+- The pipeline selects the optimal repeat per baseline via `fix_crrna_assignments.py`
 
 </details>
 
