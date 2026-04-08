@@ -396,8 +396,9 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 4, temperature: float
         return best_seq
 
 
-_MPNN_AA_ORDER = "ACDEFGHIKLMNPQRSTVWY"
+_MPNN_AA_ORDER = "ACDEFGHIKLMNPQRSTVWYX"
 _MPNN_AA_TO_IDX = {aa: i for i, aa in enumerate(_MPNN_AA_ORDER)}
+_MPNN_ALPHABET_SIZE = len(_MPNN_AA_ORDER)  # 21: 20 standard + X
 
 
 def _build_pssm_jsonl(bias: dict, chain_a_len: int, chain_b_len: int,
@@ -407,13 +408,13 @@ def _build_pssm_jsonl(bias: dict, chain_a_len: int, chain_b_len: int,
     PSSM JSONL format.
 
     ProteinMPNN expects: {pdb_name: {chain_id: {pssm_coef, pssm_bias, pssm_log_odds}}}
-    where pssm_bias and pssm_log_odds are (L x 20) matrices.
+    where pssm_bias and pssm_log_odds are (L x 21) matrices.
     Chain A (scaffold) gets all zeros (no preference). Chain B (binder) gets RL bias.
-    Amino acids in alphabetical order: ACDEFGHIKLMNPQRSTVWY.
+    Amino acids: ACDEFGHIKLMNPQRSTVWYX (20 standard + X unknown = 21).
     """
     import numpy as np
-    pssm_a = np.zeros((chain_a_len, 20), dtype=float)
-    pssm_b = np.zeros((chain_b_len, 20), dtype=float)
+    pssm_a = np.zeros((chain_a_len, _MPNN_ALPHABET_SIZE), dtype=float)
+    pssm_b = np.zeros((chain_b_len, _MPNN_ALPHABET_SIZE), dtype=float)
 
     for pos_str, aa_weights in bias.items():
         try:
