@@ -1,10 +1,12 @@
 <div align="center">
 
-# 🧬 CASCADE
+# CASCADE
 
-### **C**as **C**ollateral **A**ctivation — **D**iscovery & **E**ngineering
+### *The Dormant Blade Protocol*
 
-**Weaponizing Cas13 Collateral Cleavage: An AI-Driven Structural Pipeline for Engineered Suicide Switches in Targeted Oncology**
+**C**as **C**ollateral **A**ctivation — **D**iscovery & **E**ngineering
+
+*Weaponizing Cas13 collateral cleavage — an AI-driven structural pipeline for engineered suicide switches in targeted oncology.*
 
 [![Rust](https://img.shields.io/badge/Rust-Powered-000000?logo=rust&logoColor=white)](https://github.com/twaite11/cattle-prod)
 [![Cattle-Prod](https://img.shields.io/badge/Eval_Engine-Cattle--Prod-ff6b35)](https://github.com/twaite11/cattle-prod)
@@ -18,6 +20,8 @@
 [**Quick Start**](#-quick-start) · [**Architecture**](#-pipeline-architecture) · [**Deploy on VPS**](VPS_DEPLOY.md) · [**Interactive Diagram**](workflow_diagram.html) · [**RL Training Data**](RL_TRAINING_FORMAT.md)
 
 <br/>
+
+<p align="center"><sub>Metagenomic discovery → structural bootstrapping → RL evolution · Rust eval · SQLite dashboard</sub></p>
 
 </div>
 
@@ -707,6 +711,6 @@ This is a research project. Contact the authors for licensing inquiries.
 
 *Built for the frontier of programmable biology. Powered by Rust.*
 
-**CASCADE** — turning nature's "flaw" into medicine's most precise weapon.
+**CASCADE · *The Dormant Blade Protocol*** — turning nature's collateral curse into medicine's most precise switch.
 
 </div>
