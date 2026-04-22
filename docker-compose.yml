@@ -1,0 +1,37 @@
+# CASCADE controller stack. One service: dashboard + Vast.ai orchestrator.
+# Bring up with:
+#     docker compose up -d --build
+# Then open http://localhost:8000/dashboard
+#
+# The controller itself is CPU-only; GPU work happens on Vast.ai A100 VPS
+# instances launched via the `vastai` CLI inside this container.
+
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.controller
+    image: cascade-controller:local
+    container_name: cascade-controller
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      CASCADE_ROOT: /workspace/CASCADE
+      CASCADE_ORCH_IMAGE: ${CASCADE_ORCH_IMAGE:-ghcr.io/twaite11/cascade-orchestrator:latest}
+      VAST_SSH_KEY_PATH: ${VAST_SSH_KEY_PATH:-/root/.ssh/id_ed25519}
+      # Optional dashboard tuning:
+      DASH_MIN_IPTM: ${DASH_MIN_IPTM:-0.85}
+      DASH_MIN_AF2_IG: ${DASH_MIN_AF2_IG:-0.80}
+      DASH_MAX_ON_DISTANCE: ${DASH_MAX_ON_DISTANCE:-12.0}
+    volumes:
+      # Persistent CASCADE workspace mounted into the controller. Output runs
+      # and metadata land in these bind mounts so they survive restarts.
+      - ./outputs:/workspace/CASCADE/outputs
+      - ./metadata:/workspace/CASCADE/metadata
+      - ./data:/workspace/CASCADE/data
+      - ./jsons:/workspace/CASCADE/jsons
+      # Vast.ai API key + endpoint config:
+      - ${VASTAI_CONFIG_DIR:-~/.config/vastai}:/root/.config/vastai:ro
+      # SSH key used by the controller to reach each provisioned VPS:
+      - ${SSH_KEY_DIR:-~/.ssh}:/root/.ssh:ro

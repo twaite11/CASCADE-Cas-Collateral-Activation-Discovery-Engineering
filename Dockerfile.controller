@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1.7
+#
+# CASCADE controller image. CPU-only; runs the FastAPI dashboard, manages
+# Vast.ai runs via the `vastai` CLI + asyncssh, and serves the React SPA.
+#
+# Stage 1: build the React UI
+# Stage 2: slim Python runtime + built assets + vastai + ssh/rsync tooling
+
+# ---------- Stage 1: build frontend ----------
+FROM node:20-alpine AS ui
+WORKDIR /ui
+COPY dashboard_ui/package.json dashboard_ui/package-lock.json* dashboard_ui/npm-shrinkwrap.json* ./
+RUN npm install --no-audit --no-fund
+COPY dashboard_ui/ ./
+RUN npm run build
+
+# ---------- Stage 2: runtime ----------
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    CASCADE_ROOT=/workspace/CASCADE
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openssh-client \
+        rsync \
+        curl \
+        ca-certificates \
+        git \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/CASCADE
+
+COPY dashboard_backend/requirements-controller.txt /tmp/req.txt
+RUN pip install --upgrade pip && pip install -r /tmp/req.txt
+
+COPY dashboard_backend/ ./dashboard_backend/
+COPY scripts/ ./scripts/
+COPY dashboard_ui/package.json ./dashboard_ui/package.json
+COPY --from=ui /ui/dist ./dashboard_ui/dist
+
+# Create the dirs the controller expects so bind-mounts aren't strictly required.
+RUN mkdir -p outputs/runs outputs/run_logs outputs/optimized_switches \
+    outputs/rl_gym_data outputs/fast_eval outputs/high_fidelity_scoring \
+    metadata jsons data
+
+EXPOSE 8000
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["uvicorn", "dashboard_backend.main:app", \
+     "--host", "0.0.0.0", "--port", "8000", \
+     "--proxy-headers", "--forwarded-allow-ips", "*"]
