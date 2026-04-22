@@ -2,6 +2,7 @@ import type {
   Baseline,
   BaselinesResponse,
   OffersResponse,
+  OptimizedResponse,
   Run,
   RunDetail,
   RunsResponse,
@@ -91,12 +92,20 @@ export const api = {
   // ---------------------------- existing dashboard endpoints
   overview: () => http<unknown>("/api/overview"),
   variants: () => http<unknown>("/api/variants"),
-  optimized: () => http<unknown>("/api/optimized-switches"),
+  optimized: (limit = 500) =>
+    http<OptimizedResponse>(`/api/optimized-switches?limit=${limit}`),
   production: () => http<unknown>("/api/production"),
-  variantDetail: (id: string) => http<unknown>(`/api/variant/${id}`),
-  compare: (a: string, b: string) =>
-    http<unknown>(`/api/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
+  variantDetail: (id: string) =>
+    http<Record<string, unknown>>(`/api/variant/${encodeURIComponent(id)}`),
+  compare: (left: string, right: string) =>
+    http<unknown>(
+      `/api/compare?left=${encodeURIComponent(left)}&right=${encodeURIComponent(right)}`,
+    ),
 };
+
+export function structureFileUrl(relPath: string): string {
+  return `/api/structure-file?path=${encodeURIComponent(relPath)}`;
+}
 
 // ---------------------------- WS helper
 export function openLogStream(

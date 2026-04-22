@@ -312,14 +312,18 @@ class DashboardService:
             out.append(
                 {
                     "variant_id": row.get("variant_id"),
+                    "baseline_id": row.get("baseline_id"),
                     "generation": row.get("generation"),
                     "fitness": row.get("fitness"),
                     "iptm": row.get("iptm"),
                     "af2_ig": row.get("af2_ig"),
                     "on_dist_A": row.get("on_dist_A"),
+                    "off_dist_A": row.get("off_dist_A"),
                     "hepn_shift_A": row.get("hepn_shift_A"),
                     "optimized_reasons": row.get("optimized_reasons", []),
                     "optimized_artifacts": row.get("optimized_artifacts", {}),
+                    "eval_artifacts": row.get("eval_artifacts", {}),
+                    "domain_metadata": row.get("domain_metadata", {}),
                 }
             )
         return out

@@ -83,17 +83,46 @@ export type RunDetail = {
   log_tail: string[];
 };
 
+export type OptimizedArtifacts = {
+  fasta?: string;
+  structure?: string;
+  crrna?: string;
+};
+
+export type EvalArtifacts = {
+  on_structure?: string;
+  off_structure?: string;
+  offtarget_structure?: string;
+  on_summary?: string;
+  off_summary?: string;
+  offtarget_summary?: string;
+};
+
+export type DomainMetadata = {
+  hepn1_start?: number;
+  hepn1_end?: number;
+  hepn2_start?: number;
+  hepn2_end?: number;
+  [key: string]: unknown;
+};
+
 export type OptimizedVariant = {
   variant_id: string;
-  baseline_id: string;
+  baseline_id: string | null;
   generation: number;
   fitness: number;
-  iptm?: number;
-  af2_ig?: number;
-  off_dist_A?: number;
-  on_dist_A?: number;
-  is_elite?: boolean;
-  optimized_switch?: boolean;
+  iptm?: number | null;
+  af2_ig?: number | null;
+  off_dist_A?: number | null;
+  on_dist_A?: number | null;
+  hepn_shift_A?: number | null;
   optimized_reasons?: string[];
-  [key: string]: unknown;
+  optimized_artifacts?: OptimizedArtifacts;
+  eval_artifacts?: EvalArtifacts;
+  domain_metadata?: DomainMetadata;
+};
+
+export type OptimizedResponse = {
+  total: number;
+  rows: OptimizedVariant[];
 };
