@@ -75,17 +75,38 @@ def _find_mini_summary(eval_dir, variant_name, state_suffix):
 
 
 # --- Configuration ---
+# Run identifier controls whether output artifacts are namespaced under
+# ../outputs/runs/<RUN_ID>/... so that the dashboard controller can rsync a
+# clean, isolated tree per Vast.ai VPS. The default "local" preserves the
+# historical (un-namespaced) layout for non-containerized runs.
+RUN_ID = os.environ.get("CASCADE_RUN_ID", "local").strip() or "local"
+
+
+def _outputs_base() -> str:
+    """Return the relative outputs root for this run.
+
+    When RUN_ID is "local" or empty, returns "../outputs" (historical layout).
+    Otherwise returns "../outputs/runs/<RUN_ID>" so each containerized run
+    writes into an isolated tree.
+    """
+    if RUN_ID and RUN_ID != "local":
+        return f"../outputs/runs/{RUN_ID}"
+    return "../outputs"
+
+
 METADATA_FILE = "../metadata/variant_domain_metadata.json"
 BASE_JSON_DIR = "../jsons"
-PHASE1_PDB_DIR = "../outputs/phase1_screening"  # Where Script 2 saved the initial PDBs
-GENERATION_DIR = "../outputs/generation_queue"
-FAST_EVAL_DIR = "../outputs/fast_eval"
-HIGH_FIDELITY_DIR = "../outputs/high_fidelity_scoring"
-FINAL_HITS_DIR = "../outputs/optimized_switches"
-SWITCH_REPORT_CSV = "../outputs/optimized_switches/switch_report.csv"
-GYM_DIR = "../outputs/rl_gym_data"
+# Phase 1 structures are shared, read-only inputs; never run-namespaced.
+PHASE1_PDB_DIR = "../outputs/phase1_screening"
+VALIDATED_IDS_FILE = "../outputs/validated_baseline_ids.txt"  # Shared, read-only
+# Run-scoped output directories:
+GENERATION_DIR = f"{_outputs_base()}/generation_queue"
+FAST_EVAL_DIR = f"{_outputs_base()}/fast_eval"
+HIGH_FIDELITY_DIR = f"{_outputs_base()}/high_fidelity_scoring"
+FINAL_HITS_DIR = f"{_outputs_base()}/optimized_switches"
+SWITCH_REPORT_CSV = f"{_outputs_base()}/optimized_switches/switch_report.csv"
+GYM_DIR = f"{_outputs_base()}/rl_gym_data"
 RL_TRAINING_DATASET = os.path.join(GYM_DIR, "rl_training_dataset.jsonl")
-VALIDATED_IDS_FILE = "../outputs/validated_baseline_ids.txt"  # From validate_crispr_repeats.py; restricts lineage to validated repeats
 # Optional: set to path to databases/ for Protenix inputprep (improves MSA quality)
 SEQRES_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "databases")
 
@@ -1021,7 +1042,32 @@ def main_evolution_loop():
     else:
         log.info(f"Using all {len(baseline_ids)} baselines (not restricting by {VALIDATED_IDS_FILE})")
 
-    raw_queue = [(bid, None, None, bid) for bid in baseline_ids]
+    # CLI / env-var override: run only the explicit subset the user chose
+    # (via --baseline-ids or CASCADE_BASELINE_IDS). Preserves user-supplied
+    # order so the dashboard can control which lineage each worker handles.
+    subset_env = os.environ.get("CASCADE_BASELINE_IDS", "").strip()
+    if subset_env:
+        requested = [b.strip() for b in subset_env.split(",") if b.strip()]
+        known = set(baseline_ids)
+        kept = [b for b in requested if b in known]
+        missing = [b for b in requested if b not in known]
+        if missing:
+            log.warning(f"Requested baseline IDs not found in metadata: {missing}")
+        baseline_ids = kept
+        log.info(f"Subset via CASCADE_BASELINE_IDS: running {len(baseline_ids)} lineages")
+
+    # Parallel --crrna-lookup-ids override: baseline_id -> lookup_id map (same
+    # order as CASCADE_BASELINE_IDS). Defaults to baseline_id if absent.
+    crrna_env = os.environ.get("CASCADE_CRRNA_LOOKUP_IDS", "").strip()
+    crrna_map: dict[str, str] = {}
+    if crrna_env and subset_env:
+        lookups = [c.strip() for c in crrna_env.split(",")]
+        requested = [b.strip() for b in subset_env.split(",") if b.strip()]
+        for i, bid in enumerate(requested):
+            if i < len(lookups) and lookups[i]:
+                crrna_map[bid] = lookups[i]
+
+    raw_queue = [(bid, None, None, crrna_map.get(bid, bid)) for bid in baseline_ids]
     log.info(f"Queue contains {len(raw_queue)} lineages ({MAX_GENERATIONS} generations each)")
     if not raw_queue:
         log.warning("No baselines in metadata. Exiting.")
@@ -1064,5 +1110,83 @@ def main_evolution_loop():
     log.info("Evolution loop complete.")
 
 
+def _parse_args():
+    """Parse CLI args. Each flag also has an env-var alias so the Docker
+    entrypoint and run_pipeline.sh users can stay on env-var config."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="CASCADE evolution orchestrator — directed evolution loop"
+    )
+    parser.add_argument(
+        "--baseline-ids",
+        default=os.environ.get("CASCADE_BASELINE_IDS", ""),
+        help="Comma-separated baseline IDs to run (subset of metadata). "
+             "Default: all (or CASCADE_BASELINE_IDS env var).",
+    )
+    parser.add_argument(
+        "--crrna-lookup-ids",
+        default=os.environ.get("CASCADE_CRRNA_LOOKUP_IDS", ""),
+        help="Comma-separated crRNA lookup IDs (parallel to --baseline-ids). "
+             "Defaults to the baseline_id for each entry.",
+    )
+    parser.add_argument(
+        "--run-id",
+        default=os.environ.get("CASCADE_RUN_ID", "local"),
+        help="Namespace artifacts under outputs/runs/<run-id>/. Use 'local' "
+             "to preserve the historical un-namespaced layout (default).",
+    )
+    parser.add_argument(
+        "--max-generations",
+        type=int,
+        default=int(os.environ.get("CASCADE_MAX_GENERATIONS", str(MAX_GENERATIONS))),
+    )
+    parser.add_argument(
+        "--variants-per-gen",
+        type=int,
+        default=int(os.environ.get("CASCADE_VARIANTS_PER_GEN", str(VARIANTS_PER_GEN))),
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.environ.get("CASCADE_WORKERS", str(NUM_WORKERS))),
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
+    _args = _parse_args()
+
+    # Back-fill env vars so downstream logic and subprocess calls see the same
+    # configuration regardless of whether args came from CLI or env.
+    os.environ["CASCADE_RUN_ID"] = _args.run_id or "local"
+    if _args.baseline_ids:
+        os.environ["CASCADE_BASELINE_IDS"] = _args.baseline_ids
+    if _args.crrna_lookup_ids:
+        os.environ["CASCADE_CRRNA_LOOKUP_IDS"] = _args.crrna_lookup_ids
+    os.environ["CASCADE_MAX_GENERATIONS"] = str(_args.max_generations)
+    os.environ["CASCADE_VARIANTS_PER_GEN"] = str(_args.variants_per_gen)
+    os.environ["CASCADE_WORKERS"] = str(_args.workers)
+
+    # Mutate module globals so the CLI overrides take effect for this process.
+    RUN_ID = os.environ["CASCADE_RUN_ID"]
+    MAX_GENERATIONS = _args.max_generations
+    VARIANTS_PER_GEN = _args.variants_per_gen
+    NUM_WORKERS = _args.workers
+
+    # Recompute run-scoped paths if RUN_ID changed after import.
+    GENERATION_DIR = f"{_outputs_base()}/generation_queue"
+    FAST_EVAL_DIR = f"{_outputs_base()}/fast_eval"
+    HIGH_FIDELITY_DIR = f"{_outputs_base()}/high_fidelity_scoring"
+    FINAL_HITS_DIR = f"{_outputs_base()}/optimized_switches"
+    SWITCH_REPORT_CSV = f"{_outputs_base()}/optimized_switches/switch_report.csv"
+    GYM_DIR = f"{_outputs_base()}/rl_gym_data"
+    RL_TRAINING_DATASET = os.path.join(GYM_DIR, "rl_training_dataset.jsonl")
+
+    log.info(
+        f"Run configuration: run_id={RUN_ID} "
+        f"max_generations={MAX_GENERATIONS} variants_per_gen={VARIANTS_PER_GEN} "
+        f"workers={NUM_WORKERS} baseline_subset={bool(_args.baseline_ids)}"
+    )
+
     main_evolution_loop()
