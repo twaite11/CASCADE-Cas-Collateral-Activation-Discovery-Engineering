@@ -1,0 +1,47 @@
+# Git + venv
+.git
+.gitignore
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Node (for the controller image build context)
+node_modules
+dashboard_ui/node_modules
+dashboard_ui/dist
+
+# Large outputs / caches — rebuilt or synced from controller at runtime
+outputs/phase1_screening
+outputs/runs
+outputs/fast_eval
+outputs/high_fidelity_scoring
+outputs/generation_queue
+outputs/mining_v2
+outputs/mining_v2_fresh_v2
+outputs/rl_gym_data
+outputs/optimized_switches
+logs
+databases
+
+# Huge mined-hit FASTAs + per-contig JSONs that aren't needed by the
+# orchestrator (they are inputs only for pre-orchestrator stages)
+data/mined_hits
+jsons
+
+# Local Rust build artifacts — rebuild inside container if needed
+rust/**/target
+
+# Editor / IDE
+.vscode
+.idea
+*.swp
+.DS_Store
+
+# OS
+Thumbs.db
