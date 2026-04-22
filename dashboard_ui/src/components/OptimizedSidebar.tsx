@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Structure3D } from "@/components/Structure3D";
+import { useVariantDrawer } from "@/stores/variantDrawer";
 
 type StructureState = "on" | "off" | "offtarget" | "optimized";
 
@@ -185,6 +186,7 @@ function VariantCard({ v }: { v: OptimizedVariant }) {
   const [expanded, setExpanded] = useState(false);
   const [show3D, setShow3D] = useState(false);
   const [state, setState] = useState<StructureState>(() => pickDefaultState(v));
+  const openDrawer = useVariantDrawer((s) => s.open);
 
   const structurePath = structureFor(v, state);
 
@@ -202,7 +204,16 @@ function VariantCard({ v }: { v: OptimizedVariant }) {
               <ChevronRight className="mt-0.5 h-3.5 w-3.5 text-muted-foreground" />
             )}
             <div>
-              <CardTitle className="font-mono text-xs">{v.variant_id}</CardTitle>
+              <CardTitle
+                className="cursor-pointer font-mono text-xs hover:underline"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openDrawer(v.variant_id);
+                }}
+                title="Open detail drawer"
+              >
+                {v.variant_id}
+              </CardTitle>
               <p className="text-[10px] text-muted-foreground">
                 gen {v.generation} · lineage {v.baseline_id ?? "—"}
               </p>

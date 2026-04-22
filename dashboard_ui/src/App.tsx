@@ -1,9 +1,20 @@
 import { Link, NavLink, Route, Routes, Navigate } from "react-router-dom";
-import { FlaskConical, Play, Dna, Sparkles, Factory } from "lucide-react";
+import {
+  FlaskConical,
+  Play,
+  Dna,
+  Sparkles,
+  Factory,
+  Keyboard,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Toaster } from "@/components/ui/toast";
+import { Button } from "@/components/ui/button";
 import { OptimizedSidebar } from "@/components/OptimizedSidebar";
+import { VariantDetailDrawer } from "@/components/VariantDetailDrawer";
+import { HelpPanel, useHelp } from "@/components/HelpPanel";
+import { useShortcuts } from "@/hooks/useShortcuts";
 import { RunsPage } from "@/routes/RunsPage";
 import { BaselinesPage } from "@/routes/BaselinesPage";
 import { VariantsPage } from "@/routes/VariantsPage";
@@ -19,6 +30,7 @@ const NAV = [
 ] as const;
 
 function TopNav() {
+  const toggleHelp = useHelp((s) => s.toggle);
   return (
     <header className="sticky top-0 z-40 flex h-14 items-center border-b bg-background/80 backdrop-blur">
       <div className="flex w-full items-center gap-6 px-6">
@@ -31,7 +43,7 @@ function TopNav() {
             evolution dashboard
           </span>
         </Link>
-        <nav className="flex items-center gap-1">
+        <nav className="flex flex-1 items-center gap-1">
           {NAV.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
@@ -50,12 +62,23 @@ function TopNav() {
             </NavLink>
           ))}
         </nav>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={toggleHelp}
+          title="Keyboard shortcuts (?)"
+          className="text-muted-foreground"
+        >
+          <Keyboard className="mr-1 h-4 w-4" />
+          <kbd className="rounded border bg-muted px-1 text-xs">?</kbd>
+        </Button>
       </div>
     </header>
   );
 }
 
 export default function App() {
+  useShortcuts();
   return (
     <div className="flex h-screen flex-col">
       <TopNav />
@@ -72,6 +95,8 @@ export default function App() {
         </main>
         <OptimizedSidebar />
       </div>
+      <VariantDetailDrawer />
+      <HelpPanel />
       <Toaster />
     </div>
   );
