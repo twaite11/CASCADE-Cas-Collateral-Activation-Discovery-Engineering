@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import baselines as baselines_api
+from .api import runs as runs_api
 from .config import load_config
 from .service import DashboardService
 from .storage import SqliteVariantCatalogStore
@@ -26,6 +27,7 @@ app.add_middleware(
 )
 
 app.include_router(baselines_api.router)
+app.include_router(runs_api.router)
 
 frontend_dir = config.cascade_root / "dashboard_frontend"
 if frontend_dir.exists():

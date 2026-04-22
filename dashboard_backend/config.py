@@ -17,6 +17,12 @@ class DashboardConfig:
     min_iptm: float
     min_af2_ig: float
     max_on_distance: float
+    # Vast.ai / runs controller paths (optional; only used by /api/runs)
+    runs_db_path: Path = Path("metadata/runs.db")
+    runs_logs_dir: Path = Path("outputs/run_logs")
+    runs_artifacts_dir: Path = Path("outputs/runs")
+    orchestrator_image: str = "ghcr.io/twaite11/cascade-orchestrator:latest"
+    vast_ssh_key_path: str = ""
 
 
 def load_config() -> DashboardConfig:
@@ -38,4 +44,12 @@ def load_config() -> DashboardConfig:
         min_iptm=float(os.environ.get("DASH_MIN_IPTM", "0.85")),
         min_af2_ig=float(os.environ.get("DASH_MIN_AF2_IG", "0.80")),
         max_on_distance=float(os.environ.get("DASH_MAX_ON_DISTANCE", "12.0")),
+        runs_db_path=cascade_root / "metadata" / "runs.db",
+        runs_logs_dir=cascade_root / "outputs" / "run_logs",
+        runs_artifacts_dir=cascade_root / "outputs" / "runs",
+        orchestrator_image=os.environ.get(
+            "CASCADE_ORCH_IMAGE",
+            "ghcr.io/twaite11/cascade-orchestrator:latest",
+        ),
+        vast_ssh_key_path=os.environ.get("VAST_SSH_KEY_PATH", "").strip(),
     )
