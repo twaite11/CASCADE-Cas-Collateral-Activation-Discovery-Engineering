@@ -30,7 +30,9 @@ app.include_router(baselines_api.router)
 app.include_router(runs_api.router)
 runs_api.register_dashboard_service(service)
 
-frontend_dir = config.cascade_root / "dashboard_frontend"
+_ui_dist = config.cascade_root / "dashboard_ui" / "dist"
+_legacy_frontend = config.cascade_root / "dashboard_frontend"
+frontend_dir = _ui_dist if _ui_dist.exists() else _legacy_frontend
 if frontend_dir.exists():
     app.mount("/dashboard", StaticFiles(directory=frontend_dir, html=True), name="dashboard")
 
