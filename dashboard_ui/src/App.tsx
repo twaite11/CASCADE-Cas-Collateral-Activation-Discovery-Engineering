@@ -2,6 +2,7 @@ import { Link, NavLink, Route, Routes, Navigate } from "react-router-dom";
 import { FlaskConical, Play, Dna, Sparkles, Factory } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { Toaster } from "@/components/ui/toast";
 import { OptimizedSidebar } from "@/components/OptimizedSidebar";
 import { RunsPage } from "@/routes/RunsPage";
 import { BaselinesPage } from "@/routes/BaselinesPage";
@@ -71,6 +72,7 @@ export default function App() {
         </main>
         <OptimizedSidebar />
       </div>
+      <Toaster />
     </div>
   );
 }
