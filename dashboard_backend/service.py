@@ -44,6 +44,11 @@ class DashboardService:
         self._cache[key] = (time.time(), value)
         return value
 
+    def invalidate(self) -> None:
+        """Drop all cached derived state. Called after a run is promoted so
+        the next request re-reads the filesystem."""
+        self._cache.clear()
+
     def _safe_rel(self, path: Path) -> str:
         try:
             return str(path.resolve().relative_to(self.config.cascade_root.resolve()))

@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from ..config import DashboardConfig, load_config
 from ..vast.controller import VastController
 from ..vast.log_hub import LogHub, hub as _default_hub
+from ..vast.promoter import promote_run
 from ..vast.provisioner import VastCliError, VastProvisioner
 from ..vast.runs_store import Run, RunsStore, RunStatus
 
@@ -82,6 +83,15 @@ def get_controller(
             config.cascade_root / "outputs" / "phase1_screening",
             config.cascade_root / "outputs" / "validated_baseline_ids.txt",
         ]
+
+        def _promote(run: Run, artifacts_dir, cascade_root) -> None:
+            # Use the artifacts_dir's parent because controller passes the
+            # run-specific directory; promote_run handles both shapes.
+            promote_run(run.id, artifacts_dir, cascade_root)
+            svc = _state.get("dashboard_service")
+            if svc is not None and hasattr(svc, "invalidate"):
+                svc.invalidate()
+
         ctrl = VastController(
             store=store,
             provisioner=provisioner,
@@ -92,9 +102,16 @@ def get_controller(
             cascade_root=config.cascade_root,
             inputs_to_push=inputs_to_push,
             ssh_key_path=config.vast_ssh_key_path or None,
+            promote_fn=_promote,
         )
         _state["controller"] = ctrl
     return ctrl
+
+
+def register_dashboard_service(service: Any) -> None:
+    """Let main.py hand us the long-lived DashboardService so the post-run
+    promoter can invalidate its cache."""
+    _state["dashboard_service"] = service
 
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ app.add_middleware(
 
 app.include_router(baselines_api.router)
 app.include_router(runs_api.router)
+runs_api.register_dashboard_service(service)
 
 frontend_dir = config.cascade_root / "dashboard_frontend"
 if frontend_dir.exists():
