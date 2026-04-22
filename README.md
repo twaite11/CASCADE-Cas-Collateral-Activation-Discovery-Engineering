@@ -396,6 +396,30 @@ Then open:
 - Dashboard UI: `http://<server-ip>:8000/dashboard`
 - Runbook: `dashboard_backend/README.md`
 
+### Containerized controller + Vast.ai parallel runs
+
+For one-click bring-up of the full controller stack (dashboard + Vast.ai
+orchestration + React SPA) and to launch each parallel evolution run on a
+dedicated A100 VPS, use the bundled Docker image:
+
+```bash
+cp .env.example .env            # edit VAST_SSH_KEY_PATH, etc.
+docker compose up -d --build    # http://localhost:8000/dashboard
+```
+
+From the dashboard you can:
+
+1. **Baselines tab** — pick enzyme IDs (and their matching crRNA) to evolve.
+2. **Launch runs** — the controller calls `vastai create instance` per run,
+   streams orchestrator logs via WebSocket (xterm.js), and rsyncs results back
+   on completion. No Redis, no Celery — SQLite + asyncio only.
+3. **Optimized Switches sidebar** — live leaderboard with per-variant 3Dmol
+   toggle (ON / OFF / off-target), HEPN1/HEPN2 coloring, and filters.
+4. **Variant detail drawer** — full metadata, side-by-side 3D compare,
+   crRNA spacer viz, artifact downloads. Press `?` for keyboard shortcuts.
+
+> 📖 **Full container deployment guide:** [CONTAINER_DEPLOY.md](CONTAINER_DEPLOY.md)
+
 ### Concise Variant Naming
 
 Generated variant IDs are now concise and generation-stable:
