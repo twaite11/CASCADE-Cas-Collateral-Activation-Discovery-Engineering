@@ -4,7 +4,7 @@
 
 ### *The Dormant Blade Protocol*
 
-**C**as **C**ollateral **A**ctivation — **D**iscovery & **E**ngineering
+**Cas** **C**ollateral **A**ctivation — **D**iscovery & **E**ngineering
 
 *Weaponizing Cas13 collateral cleavage — an AI-driven structural pipeline for engineered suicide switches in targeted oncology.*
 
