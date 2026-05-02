@@ -1,6 +1,6 @@
 <div align="center">
 
-# CASCADE
+# CasCADE
 
 ### *The Dormant Blade Protocol*
 
