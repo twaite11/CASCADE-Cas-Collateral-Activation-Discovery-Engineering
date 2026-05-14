@@ -16,7 +16,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Calculate Euclidean distance between two HEPN catalytic histidine CA atoms
+    /// Calculate Euclidean distance between two HEPN catalytic histidine side-chain atoms.
+    ///
+    /// By default the distance is measured between the imidazole NE2 nitrogens
+    /// (the catalytic atoms that coordinate the scissile-phosphate water in the
+    /// composite HEPN active site).  The CASCADE OFF >= 18 A and ON <= 12 A gates
+    /// are defined on this NE2-NE2 distance (see scripts/utils/pdb_kinematics.py).
+    /// If NE2 is missing (mutated to a non-His residue, or model lacks side-chain
+    /// atoms), the tool falls back through the comma-separated --atom-fallback
+    /// list (default: ND1, CG, CA) so a number is still returned but with a
+    /// well-defined provenance.
     HepnDistance {
         #[arg(long)]
         structure: PathBuf,
@@ -26,6 +35,10 @@ enum Commands {
         h2_idx: isize,
         #[arg(long, default_value = "A")]
         chain: String,
+        #[arg(long, default_value = "NE2")]
+        atom: String,
+        #[arg(long, default_value = "ND1,CG,CA")]
+        atom_fallback: String,
     },
     /// Extract prediction scores from a Protenix summary JSON file
     ExtractScores {
@@ -59,11 +72,12 @@ fn load_structure(path: &Path) -> Result<pdbtbx::PDB, String> {
         .map_err(|errors| format!("{errors:?}"))
 }
 
-fn find_ca_coords(
+fn find_atom_coords(
     chain: &pdbtbx::Chain,
     residue_idx: isize,
+    atom_chain: &[&str],
     structure_path: &Path,
-) -> Result<(f64, f64, f64), String> {
+) -> Result<((f64, f64, f64), String), String> {
     let residue = chain
         .residues()
         .find(|r| r.serial_number() == residue_idx)
@@ -76,21 +90,28 @@ fn find_ca_coords(
             )
         })?;
 
-    let ca = residue
-        .atoms()
-        .find(|a| a.name().trim() == "CA")
-        .ok_or_else(|| {
-            format!(
-                "Could not find required residue or chain in structure {}. Error: \
-                 CA atom not found in residue {residue_idx}",
-                structure_path.display()
-            )
-        })?;
+    for name in atom_chain {
+        if let Some(atom) = residue.atoms().find(|a| a.name().trim() == *name) {
+            return Ok((atom.pos(), (*name).to_string()));
+        }
+    }
 
-    Ok(ca.pos())
+    Err(format!(
+        "Could not find required residue or chain in structure {}. Error: \
+         none of atoms [{}] found in residue {residue_idx}",
+        structure_path.display(),
+        atom_chain.join(",")
+    ))
 }
 
-fn cmd_hepn_distance(structure: &Path, h1_idx: isize, h2_idx: isize, chain_id: &str) {
+fn cmd_hepn_distance(
+    structure: &Path,
+    h1_idx: isize,
+    h2_idx: isize,
+    chain_id: &str,
+    atom_primary: &str,
+    atom_fallback_csv: &str,
+) {
     if !structure.exists() {
         eprintln!("Structure file not found: {}", structure.display());
         process::exit(1);
@@ -129,23 +150,45 @@ fn cmd_hepn_distance(structure: &Path, h1_idx: isize, h2_idx: isize, chain_id: &
         }
     };
 
-    let (x1, y1, z1) = match find_ca_coords(chain, h1_idx, structure) {
-        Ok(c) => c,
+    // Build the atom-name preference list: primary first, then comma-separated
+    // fallbacks (defaults NE2 -> ND1 -> CG -> CA).  NE2 is the catalytic atom
+    // in the Cas13 composite HEPN active site.
+    let mut atom_chain: Vec<&str> = Vec::with_capacity(8);
+    atom_chain.push(atom_primary);
+    for name in atom_fallback_csv.split(',') {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() && trimmed != atom_primary {
+            atom_chain.push(trimmed);
+        }
+    }
+
+    let (p1, a1) = match find_atom_coords(chain, h1_idx, &atom_chain, structure) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+    };
+    let (p2, a2) = match find_atom_coords(chain, h2_idx, &atom_chain, structure) {
+        Ok(v) => v,
         Err(e) => {
             eprintln!("{e}");
             process::exit(1);
         }
     };
 
-    let (x2, y2, z2) = match find_ca_coords(chain, h2_idx, structure) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            process::exit(1);
-        }
-    };
-
+    let (x1, y1, z1) = p1;
+    let (x2, y2, z2) = p2;
     let distance = ((x1 - x2).powi(2) + (y1 - y2).powi(2) + (z1 - z2).powi(2)).sqrt();
+
+    // Print distance only on stdout (preserves the existing CLI contract: a
+    // single floating-point number).  Provenance of which atoms were measured
+    // goes to stderr so consumers parsing stdout aren't affected.
+    if a1 != atom_primary || a2 != atom_primary {
+        eprintln!(
+            "[cascade_structscore] hepn-distance fell back: h1={a1} h2={a2} (primary={atom_primary})"
+        );
+    }
     println!("{:.3}", distance);
 }
 
@@ -259,7 +302,9 @@ fn main() {
             h1_idx,
             h2_idx,
             chain,
-        } => cmd_hepn_distance(structure, *h1_idx, *h2_idx, chain),
+            atom,
+            atom_fallback,
+        } => cmd_hepn_distance(structure, *h1_idx, *h2_idx, chain, atom, atom_fallback),
         Commands::ExtractScores { summary } => cmd_extract_scores(summary),
         Commands::FindStructures { dir } => cmd_find_structures(dir),
     }

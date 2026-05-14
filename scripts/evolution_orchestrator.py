@@ -885,8 +885,26 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
                                 offtarget_by_mismatch[n_mismatch] = ot_dist
                             else:
                                 offtarget_by_mismatch[n_mismatch] = min(offtarget_by_mismatch[n_mismatch], ot_dist)
-                        except Exception:
-                            offtarget_by_mismatch[n_mismatch] = MIN_OFF_DISTANCE
+                        except Exception as off_exc:
+                            # B-4 fix: a failed off-target Protenix run used to
+                            # set the distance to MIN_OFF_DISTANCE (== fully
+                            # dormant), which silently rewarded variants that
+                            # crashed.  Treat the failure as the worst case the
+                            # off-target panel can produce: a fully-ON HEPN
+                            # state (== zero specificity).  This applies a real
+                            # penalty in compute_fitness's specificity term
+                            # rather than a bonus.
+                            log.warning(
+                                f"{tag} off-target eval failed ({n_mismatch}mm idx={i}): "
+                                f"{off_exc}; scoring as MAX_ON_DISTANCE (penalty path)"
+                            )
+                            failed_dist = float(MAX_ON_DISTANCE)
+                            if n_mismatch not in offtarget_by_mismatch:
+                                offtarget_by_mismatch[n_mismatch] = failed_dist
+                            else:
+                                offtarget_by_mismatch[n_mismatch] = min(
+                                    offtarget_by_mismatch[n_mismatch], failed_dist
+                                )
                     if offtarget_by_mismatch:
                         mm_str = " | ".join(f"{k}mm:{v:.1f}A" for k, v in sorted(offtarget_by_mismatch.items()))
                         log.info(f"{tag} [Specificity] {variant_name} | {mm_str}")
@@ -907,7 +925,18 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
                     offtarget_by_mismatch=offtarget_by_mismatch or None
                 )
                 struct_path = hf_pdb_path if hf_pdb_path else on_pdb
-                is_elite = (iptm >= MIN_IPTM_SCORE and af2_ig >= MIN_AF2_IG_SCORE and true_on_dist <= MAX_ON_DISTANCE)
+                # B-5 fix: the elite gate previously only required iptm, af2_ig,
+                # and ON <= MAX_ON_DISTANCE.  A variant whose OFF state is also
+                # already collapsed (HEPN sites close in the OFF/dormant ternary)
+                # would be tagged elite even though it cannot switch.  The
+                # product hypothesis explicitly requires OFF >= MIN_OFF_DISTANCE
+                # in the dormant state -- enforce it here.
+                is_elite = (
+                    iptm >= MIN_IPTM_SCORE
+                    and af2_ig >= MIN_AF2_IG_SCORE
+                    and true_on_dist <= MAX_ON_DISTANCE
+                    and off_dist >= MIN_OFF_DISTANCE
+                )
                 save_rl_training_record(
                     variant_name, variant_fasta, bid, bfasta, crrna_lid,
                     generation_counter, mutations_made, fitness, off_dist, true_on_dist, iptm, af2_ig,

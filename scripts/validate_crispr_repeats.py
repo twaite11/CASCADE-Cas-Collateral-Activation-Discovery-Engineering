@@ -226,7 +226,19 @@ def main():
 
                 chosen, reason = select_best_repeat(k_mers)
                 structure, mfe = run_rnafold(chosen) if chosen else (None, None)
-                structure_ok = has_plausible_stemloop(structure or "", mfe or 0) if chosen else False
+                # B-10 fix: previously this was `has_plausible_stemloop(structure or "", mfe or 0)`,
+                # which silently coerced a missing MFE to 0.0 -- that makes
+                # `mfe / n <= -0.05` evaluate to `False` (correct) but only
+                # because the structure string is empty.  When ViennaRNA *is*
+                # available but RNAfold returns a partial result, `mfe or 0`
+                # masks the real value.  Treat (None, None) as an explicit
+                # "RNAfold unavailable / failed" signal and mark structure_ok
+                # = False with no MFE substitution, so downstream consumers
+                # don't get fake numbers.
+                if not chosen or structure is None or mfe is None:
+                    structure_ok = False
+                else:
+                    structure_ok = has_plausible_stemloop(structure, mfe)
 
                 rows.append({
                     "sequence_id": seq_id,

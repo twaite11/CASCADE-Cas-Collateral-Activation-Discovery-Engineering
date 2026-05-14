@@ -23,6 +23,12 @@ DATA_DIR = "../data/mined_hits"
 DB_FILE = "../metadata/cas13_variants.db"
 JSON_OUT_DIR = "../jsons"
 METADATA_OUT_FILE = "../metadata/variant_domain_metadata.json"
+# B-9 fix: the corrected-DR report path is broken out as a module constant so
+# tests (and future operators) can override it from outside.
+CORRECTED_DR_REPORT_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "outputs",
+    "repeat_validation_report.csv",
+)
 
 # RNA Constants — use the subtype-aware helpers from protenix_eval when available,
 # but keep these defaults for standalone use.
@@ -110,22 +116,41 @@ def load_files_to_db(conn):
     # 2. Parse all CSVs and update metadata
     log.info("Streaming CSV metadata to SQLite...")
 
-    # If fix_crrna_assignments has produced a corrected report, use it
-    corrected_dr_path = os.path.join(os.path.dirname(__file__), "..", "outputs", "repeat_validation_report.csv")
-    corrected_drs = {}
+    # If fix_crrna_assignments / validate-repeats has produced a corrected
+    # report, use it.  B-9 fix: there are two producers of this report and they
+    # historically wrote different column names:
+    #   * scripts/fix_crrna_assignments.py  -> column "new_dr"
+    #   * rust/cascade_sequtils validate-repeats -> column "chosen_repeat"
+    # Read either, preferring whichever is present and non-empty so the Rust
+    # accelerator path and the Python path are interchangeable.  When both are
+    # present and disagree, prefer chosen_repeat (it carries explicit selection
+    # provenance via "selection_reason"/"structure_ok").  The report path can
+    # be overridden via the module-level CORRECTED_DR_REPORT_PATH constant for
+    # testing (set it before calling load_files_to_db).
+    corrected_dr_path = CORRECTED_DR_REPORT_PATH
+    corrected_drs: dict[str, str] = {}
     if os.path.exists(corrected_dr_path):
         try:
             with open(corrected_dr_path, encoding="utf-8") as cf:
                 cr = csv.DictReader(cf)
                 for crow in cr:
                     sid = crow.get("sequence_id", "")
-                    new_dr = crow.get("new_dr", "")
-                    if sid and new_dr:
-                        corrected_drs[sid] = new_dr
+                    chosen = (crow.get("chosen_repeat") or "").strip()
+                    new_dr = (crow.get("new_dr") or "").strip()
+                    structure_ok = (crow.get("structure_ok") or "").strip().lower()
+                    if not sid:
+                        continue
+                    # If the Rust report includes structure_ok=false, skip it
+                    # (an explicit "this DR did not fold" signal).
+                    if structure_ok == "false":
+                        continue
+                    dr = chosen or new_dr
+                    if dr:
+                        corrected_drs[sid] = dr
             if corrected_drs:
                 log.info(f"Loaded {len(corrected_drs)} corrected crRNA DRs from {corrected_dr_path}")
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning(f"Could not read corrected DR report {corrected_dr_path}: {exc}")
 
     for csv_file in csv_files:
         with open(csv_file, mode='r', encoding='utf-8') as f:
@@ -211,7 +236,9 @@ def identify_hepn_domains(conn):
     # Select only sequences that haven't been successfully processed yet
     cursor.execute("SELECT sequence_id, sequence FROM variants WHERE sequence IS NOT NULL")
     
-    motif = re.compile(r'R.{3,6}H')
+    # B-3 / B-14 fix: canonical Cas13 HEPN motif is R-X(4-6)-H, matching the
+    # Rust cascade_ingest accelerator after its B-3 fix.
+    motif = re.compile(r'R.{4,6}H')
     processed = 0
     
     while True:

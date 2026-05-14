@@ -52,7 +52,12 @@ log = logging.getLogger(__name__)
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 
-HEPN_REGEX = re.compile(r"R.{3,8}H")
+# Canonical Cas13 HEPN catalytic motif is R-X(4-6)-H (the imidazole ring of the
+# downstream histidine coordinates with R's guanidinium through 4-6 residues of
+# spacer).  The previous R-X(3-8)-H regex matched ~3x more random sequence and
+# was the upstream cause of many of the false positives audited on 2026-05-13
+# (see docs/AUDIT_2026-05-13.md, finding B-2).
+HEPN_REGEX = re.compile(r"R.{4,6}H")
 MIN_ORF_AA = 600
 MAX_ORF_AA = 1400
 MIN_HEPN_PAIRS = 2
@@ -198,8 +203,14 @@ def run_minced(contig_fasta: str, output_dir: str) -> dict:
     arrays = defaultdict(list)
     if os.path.exists(gff_path):
         current_contig = None
-        current_repeats = []
-        current_spacers = []
+        current_repeats: list = []
+        current_spacers: list = []
+        # B-2 fix: track the genomic span of the CRISPR array as reported by
+        # MinCED's `repeat_region` feature line so `assign_dr_to_orf` can match
+        # ORFs to arrays by distance.  Previously these were silently dropped
+        # and the MinCED branch could never produce HIGH-confidence hits.
+        current_array_start: int | None = None
+        current_array_end: int | None = None
         with open(gff_path) as f:
             for line in f:
                 if line.startswith("#") or not line.strip():
@@ -215,38 +226,63 @@ def run_minced(contig_fasta: str, output_dir: str) -> dict:
 
                 if feature == "repeat_region":
                     if current_contig and current_repeats:
-                        _finalize_array(arrays, current_contig, current_repeats, current_spacers)
+                        _finalize_array(
+                            arrays, current_contig, current_repeats, current_spacers,
+                            current_array_start, current_array_end,
+                        )
                     current_contig = contig
                     current_repeats = []
                     current_spacers = []
+                    # MinCED uses 1-based inclusive; keep as-is for distance math
+                    current_array_start = start
+                    current_array_end = end
                 elif feature == "repeat_unit":
                     seq_match = re.search(r"rpt_unit_seq=([ACGT]+)", attrs, re.I)
                     if seq_match:
                         current_repeats.append(seq_match.group(1))
+                    if current_array_start is None:
+                        current_array_start = start
+                    current_array_end = end if current_array_end is None else max(current_array_end, end)
                 elif feature == "binding_site":
                     seq_match = re.search(r"spacer=([ACGT]+)", attrs, re.I)
                     if seq_match:
                         current_spacers.append(seq_match.group(1))
 
             if current_contig and current_repeats:
-                _finalize_array(arrays, current_contig, current_repeats, current_spacers)
+                _finalize_array(
+                    arrays, current_contig, current_repeats, current_spacers,
+                    current_array_start, current_array_end,
+                )
 
     return dict(arrays)
 
 
-def _finalize_array(arrays: dict, contig: str, repeats: list, spacers: list):
-    """Build consensus repeat from a detected CRISPR array."""
+def _finalize_array(arrays: dict, contig: str, repeats: list, spacers: list,
+                    array_start: int | None = None, array_end: int | None = None):
+    """Build consensus repeat from a detected CRISPR array.
+
+    B-2 fix: `array_start` / `array_end` are now populated from the MinCED GFF
+    `repeat_region` line so downstream `assign_dr_to_orf` can compute the
+    genomic distance between the ORF and the array.  When called without
+    coordinates (legacy callers / pure-Python fallback path), the array is
+    still recorded but without coordinates, so the assignment step will skip
+    it -- preserving the previous behaviour rather than fabricating a position.
+    """
     if len(repeats) < 2:
         return
     consensus = repeats[0].replace("T", "U")
     n_unique_spacers = len(set(spacers))
-    arrays[contig].append({
+    entry = {
         "consensus_repeat": consensus,
         "n_repeats": len(repeats),
         "n_spacers": len(spacers),
         "n_unique_spacers": n_unique_spacers,
         "repeat_length": len(repeats[0]),
-    })
+    }
+    if array_start is not None and array_end is not None:
+        entry["array_start"] = int(array_start)
+        entry["array_end"] = int(array_end)
+    arrays[contig].append(entry)
 
 
 def run_python_crispr_detection(contig_seq: str) -> list:

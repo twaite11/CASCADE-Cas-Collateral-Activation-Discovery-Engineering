@@ -129,15 +129,38 @@ def is_trna_like(seq: str) -> bool:
     return False
 
 
+_VIENNA_MISSING_WARNED = False
+
+
 def has_crispr_structure(seq: str) -> bool:
     """Check if a DR candidate has plausible CRISPR repeat structure via RNAfold.
     CRISPR DRs typically have a single stem-loop, MFE between -2 and -15 kcal/mol.
-    tRNAs have much stronger structure (MFE < -20 kcal/mol per 70nt)."""
+    tRNAs have much stronger structure (MFE < -20 kcal/mol per 70nt).
+
+    B-10 fix: when ViennaRNA isn't installed, the previous behaviour was to
+    `return True` (= accept any sequence as a DR candidate), which silently
+    disabled the entire structural filter and let tRNA fragments through.  We
+    now fail-closed: return False once, warn once at module level, and treat
+    every subsequent call the same way until ViennaRNA is installed.  Callers
+    that want the legacy permissive behaviour must opt in explicitly by setting
+    the CASCADE_VIENNARNA_FAIL_OPEN environment variable to a truthy value.
+    """
+    global _VIENNA_MISSING_WARNED
     try:
         import RNA
         structure, mfe = RNA.fold(seq)
     except ImportError:
-        return True  # can't filter without ViennaRNA, accept
+        if not _VIENNA_MISSING_WARNED:
+            _VIENNA_MISSING_WARNED = True
+            log.warning(
+                "ViennaRNA not installed -- has_crispr_structure() failing closed. "
+                "Install `viennarna` (conda-forge) to enable structural filtering, "
+                "or set CASCADE_VIENNARNA_FAIL_OPEN=1 to restore the legacy "
+                "permissive behaviour (NOT recommended for production mining)."
+            )
+        if os.environ.get("CASCADE_VIENNARNA_FAIL_OPEN", "").lower() in {"1", "true", "yes"}:
+            return True
+        return False
     if not structure:
         return False
     n = len(seq)

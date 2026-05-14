@@ -49,6 +49,72 @@ fn ensure_parent_dir(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Select the best pair of R-X(4-6)-H HEPN catalytic motifs from a protein
+/// sequence using positional + separation constraints.  This is the Rust port
+/// of `scripts/01_parse_and_annotate.py::_select_hepn_pair`; the two must stay
+/// in lockstep (see B-3 in docs/AUDIT_2026-05-13.md).
+///
+///   * HEPN1 is expected in the first 65 % of the protein
+///   * HEPN2 is expected in the last 65 % of the protein
+///   * The two domains are typically 150-600 residues apart, ideally ~300
+///
+/// `starts` is the list of 0-based motif starts as produced by `hepn_re.find_iter`.
+/// Returns `Some((hepn1_center, hepn2_center))` on success, or `None` if no
+/// pair satisfies the constraints (even with the relaxed positional fallback).
+pub fn select_hepn_pair(
+    starts: &[usize],
+    seq_len: usize,
+    min_sep: usize,
+    max_sep: usize,
+    ideal_sep: usize,
+) -> Option<(usize, usize)> {
+    if starts.len() < 2 {
+        return None;
+    }
+
+    let early_cut = (seq_len as f64 * 0.65) as usize;
+    let late_cut = (seq_len as f64 * 0.35) as usize;
+    let early: Vec<usize> = starts.iter().copied().filter(|&s| s < early_cut).collect();
+    let late: Vec<usize> = starts.iter().copied().filter(|&s| s > late_cut).collect();
+
+    let mut best: Option<(usize, usize)> = None;
+    let mut best_score: i64 = i64::MAX;
+    for &m1 in &early {
+        for &m2 in &late {
+            if m2 <= m1 {
+                continue;
+            }
+            let sep = m2 - m1;
+            if sep >= min_sep && sep <= max_sep {
+                let score = (sep as i64 - ideal_sep as i64).abs();
+                if score < best_score {
+                    best_score = score;
+                    best = Some((m1, m2));
+                }
+            }
+        }
+    }
+    if best.is_some() {
+        return best;
+    }
+
+    // Fallback: if no pair satisfies the strict positional constraints, try
+    // every pair under just the separation filter.
+    for (i, &m1) in starts.iter().enumerate() {
+        for &m2 in &starts[i + 1..] {
+            let sep = m2 - m1;
+            if sep >= min_sep && sep <= max_sep {
+                let score = (sep as i64 - ideal_sep as i64).abs();
+                if score < best_score {
+                    best_score = score;
+                    best = Some((m1, m2));
+                }
+            }
+        }
+    }
+    best
+}
+
 fn sorted_glob(pattern: &str) -> Vec<std::path::PathBuf> {
     let mut paths: Vec<_> = glob::glob(pattern)
         .unwrap_or_else(|e| {
@@ -187,8 +253,11 @@ fn run() -> Result<(), String> {
     }
 
     // Step 4: HEPN domain scanning
+    //
+    // B-3 / B-14 fix: regex tightened from R.{3,6}H to canonical R.{4,6}H
+    // (matches Python `_select_hepn_pair` exactly).
     log_info("Scanning sequences for HEPN domains (may take a minute for large DBs)...");
-    let hepn_re = Regex::new(r"R.{3,6}H").unwrap();
+    let hepn_re = Regex::new(r"R.{4,6}H").unwrap();
 
     let rows: Vec<(String, String)> = {
         let mut stmt = conn
@@ -206,27 +275,53 @@ fn run() -> Result<(), String> {
     for chunk in rows.chunks(1000) {
         let tx = conn.transaction().map_err(|e| format!("Transaction error: {}", e))?;
         for (seq_id, sequence) in chunk {
-            let matches: Vec<_> = hepn_re.find_iter(sequence).collect();
-            if matches.len() < 2 {
-                let reason = format!("Only {} HEPN motifs found.", matches.len());
+            let starts: Vec<usize> = hepn_re.find_iter(sequence).map(|m| m.start()).collect();
+            if starts.len() < 2 {
+                let reason = format!("Only {} HEPN motifs found.", starts.len());
                 tx.execute(
                     "UPDATE variants SET status = 'failed', reason = ?1 WHERE sequence_id = ?2",
                     params![reason, seq_id],
                 )
                 .map_err(|e| format!("Failed to update failed HEPN: {}", e))?;
-            } else {
-                let hepn1_center = matches[0].start() as i64;
-                let hepn2_center = matches[matches.len() - 1].start() as i64;
-                let h1_start = 0i64.max(hepn1_center - 30);
-                let h1_end = hepn1_center + 80;
-                let h2_start = (hepn1_center + 80).max(hepn2_center - 30);
-                let h2_end = hepn2_center + 80;
+            } else if let Some((hepn1_center, hepn2_center)) =
+                select_hepn_pair(&starts, sequence.len(), 150, 600, 300)
+            {
+                // B-3 fix: mirror scripts/01_parse_and_annotate.py:_select_hepn_pair.
+                // Previously this used `matches[0]` and `matches.last()`, which
+                // anchored on spurious R-X(4-6)-H occurrences in NTD/CTD when a
+                // sequence had >2 motifs.  Now we apply the same positional and
+                // separation constraints as the Python pipeline so the two
+                // implementations annotate the same residues.
+                let h1c = hepn1_center as i64;
+                let h2c = hepn2_center as i64;
+                let h1_start = 0i64.max(h1c - 30);
+                let h1_end = h1c + 80;
+                let h2_start = (h1c + 80).max(h2c - 30);
+                let h2_end = h2c + 80;
+                let reason = if starts.len() > 4 {
+                    format!(
+                        "HEPN anchored (warning: {} R...H motifs - verify 2 are catalytic)",
+                        starts.len()
+                    )
+                } else {
+                    "HEPN anchored".to_string()
+                };
                 tx.execute(
                     "UPDATE variants SET hepn1_start=?1, hepn1_end=?2, hepn2_start=?3, hepn2_end=?4, \
-                     status='success', reason='HEPN anchored' WHERE sequence_id=?5",
-                    params![h1_start, h1_end, h2_start, h2_end, seq_id],
+                     status='success', reason=?5 WHERE sequence_id=?6",
+                    params![h1_start, h1_end, h2_start, h2_end, reason, seq_id],
                 )
                 .map_err(|e| format!("Failed to update HEPN domains: {}", e))?;
+            } else {
+                let reason = format!(
+                    "{} HEPN motifs found but no valid pair under positional+separation constraints.",
+                    starts.len()
+                );
+                tx.execute(
+                    "UPDATE variants SET status = 'failed', reason = ?1 WHERE sequence_id = ?2",
+                    params![reason, seq_id],
+                )
+                .map_err(|e| format!("Failed to update HEPN pair-miss: {}", e))?;
             }
         }
         tx.commit().map_err(|e| format!("Commit error: {}", e))?;
