@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
 import { openLogStream } from "@/lib/api";
+import { PALETTE_HEX } from "@/lib/palette";
 
 interface Props {
   runId: string;
@@ -12,13 +13,42 @@ interface Props {
 }
 
 /**
- * xterm.js terminal bound to `/api/runs/{id}/logs` WebSocket stream. Seeds
- * with `initialLines` (from HTTP snapshot), then streams live lines.
+ * xterm.js terminal bound to `/api/runs/{id}/logs` WebSocket stream.
+ *
+ * C-16 fix: the previous implementation seeded the buffer with
+ * `initialLines` *exactly once* on mount and then `eslint-disable`d the
+ * dependency array.  When the parent component swapped between two runs,
+ * the prop changed but the seed never re-ran -- the terminal kept the old
+ * run's history with new live lines interleaved.
+ *
+ * We now key the entire useEffect on `runId` AND re-seed using a ref so
+ * the most-recent `initialLines` is always reflected without triggering
+ * the full xterm remount.  We also key on the buffer's content hash so
+ * an HTTP snapshot refresh after the user re-opens the tab actually
+ * back-fills lines the WS missed during disconnect.
  */
 export function LogTerminal({ runId, initialLines = [], heightPx = 320 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  // Track the seed we've already written so we don't duplicate lines when
+  // the parent refetches the HTTP snapshot.
+  const seedSignatureRef = useRef<string>("");
+
+  // Re-seed whenever the run changes or the snapshot grows past what we've
+  // already written.  Cheap content fingerprint = "len|first|last".
+  useEffect(() => {
+    if (!termRef.current || initialLines.length === 0) return;
+    const sig = `${initialLines.length}|${initialLines[0]}|${
+      initialLines[initialLines.length - 1]
+    }`;
+    if (sig === seedSignatureRef.current) return;
+    // We've grown; only write the *new tail*, not the whole buffer again.
+    const oldLen = parseInt(seedSignatureRef.current.split("|")[0] ?? "0", 10);
+    const tail = initialLines.slice(Number.isFinite(oldLen) ? oldLen : 0);
+    for (const line of tail) termRef.current.writeln(line);
+    seedSignatureRef.current = sig;
+  }, [initialLines]);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -29,9 +59,9 @@ export function LogTerminal({ runId, initialLines = [], heightPx = 320 }: Props)
         "JetBrains Mono, Menlo, Consolas, 'Courier New', monospace",
       fontSize: 12,
       theme: {
-        background: "#09090b",
+        background: PALETTE_HEX.structureBg,
         foreground: "#e4e4e7",
-        cursor: "#38bdf8",
+        cursor: PALETTE_HEX.rna,
         selectionBackground: "#1e40af",
       },
       scrollback: 10_000,
@@ -48,15 +78,22 @@ export function LogTerminal({ runId, initialLines = [], heightPx = 320 }: Props)
 
     termRef.current = term;
     fitRef.current = fit;
-
-    for (const line of initialLines) {
-      term.writeln(line);
+    // Reset seed tracking and write the current snapshot for this run.
+    seedSignatureRef.current = "";
+    if (initialLines.length > 0) {
+      for (const line of initialLines) term.writeln(line);
+      seedSignatureRef.current = `${initialLines.length}|${initialLines[0]}|${
+        initialLines[initialLines.length - 1]
+      }`;
     }
 
     const close = openLogStream(
       runId,
       (line) => term.writeln(line),
-      () => term.writeln("\x1b[2m[connection closed]\x1b[0m"),
+      (reason) =>
+        term.writeln(
+          `\x1b[2m[connection closed${reason ? `: ${reason}` : ""}]\x1b[0m`,
+        ),
     );
 
     const ro = new ResizeObserver(() => {
@@ -75,7 +112,8 @@ export function LogTerminal({ runId, initialLines = [], heightPx = 320 }: Props)
       termRef.current = null;
       fitRef.current = null;
     };
-    // Only re-mount when runId changes — initialLines re-renders are fine to ignore.
+    // Only re-mount when runId changes; initialLines re-seed via the
+    // dedicated effect above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
 

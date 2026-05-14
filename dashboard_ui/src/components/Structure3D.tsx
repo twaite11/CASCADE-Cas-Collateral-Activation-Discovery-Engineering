@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import * as $3Dmol from "3dmol";
 
-import { structureFileUrl } from "@/lib/api";
+import { structureFileUrl, withAuth } from "@/lib/api";
 import type { DomainMetadata } from "@/lib/types";
+import { HEPN_LEGEND_ITEMS, PALETTE_HEX } from "@/lib/palette";
 
 interface Props {
   path: string;
@@ -23,6 +24,9 @@ export function Structure3D({ path, hepn, heightPx = 280 }: Props) {
 
   useEffect(() => {
     let disposed = false;
+    // Phase-3 fix: abortable fetch so an unmount mid-load doesn't leak a
+    // half-completed render into the next mount.
+    const ctrl = new AbortController();
 
     async function boot() {
       if (!hostRef.current) return;
@@ -34,14 +38,17 @@ export function Structure3D({ path, hepn, heightPx = 280 }: Props) {
       let data: string;
       let fmt: "cif" | "pdb";
       try {
-        const resp = await fetch(structureFileUrl(path));
+        const resp = await fetch(structureFileUrl(path), withAuth({ signal: ctrl.signal }));
         if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
         data = await resp.text();
         fmt = path.toLowerCase().endsWith(".cif") ? "cif" : "pdb";
       } catch (e: any) {
         if (!disposed) {
-          setError(String(e?.message ?? e));
-          setLoading(false);
+          // AbortError is expected on rapid prop changes; don't surface it.
+          if (e?.name !== "AbortError") {
+            setError(String(e?.message ?? e));
+            setLoading(false);
+          }
         }
         return;
       }
@@ -49,7 +56,7 @@ export function Structure3D({ path, hepn, heightPx = 280 }: Props) {
       if (disposed || !hostRef.current) return;
 
       const viewer = $3Dmol.createViewer(hostRef.current, {
-        backgroundColor: "#09090b",
+        backgroundColor: PALETTE_HEX.structureBg,
       });
       viewerRef.current = viewer;
 
@@ -58,25 +65,26 @@ export function Structure3D({ path, hepn, heightPx = 280 }: Props) {
       // Neutral base cartoon for everything
       viewer.setStyle(
         {},
-        { cartoon: { color: "#6b7280", thickness: 0.6 } },
+        { cartoon: { color: PALETTE_HEX.protein, thickness: 0.6 } },
       );
       // RNA / DNA: blue
       viewer.setStyle(
         { resn: ["A", "G", "C", "U", "T", "DA", "DG", "DC", "DT"] },
-        { cartoon: { color: "#38bdf8", thickness: 0.8 } },
+        { cartoon: { color: PALETTE_HEX.rna, thickness: 0.8 } },
       );
 
-      // HEPN coloring
+      // HEPN coloring — palette is centralised in @/lib/palette so the 3D
+      // viewer, the spacer track, and the legend never drift apart (F-2).
       if (hepn?.hepn1_start != null && hepn?.hepn1_end != null) {
         viewer.addStyle(
           { resi: `${hepn.hepn1_start}-${hepn.hepn1_end}` },
-          { cartoon: { color: "#f97316", thickness: 1.0 } },
+          { cartoon: { color: PALETTE_HEX.hepn1, thickness: 1.0 } },
         );
       }
       if (hepn?.hepn2_start != null && hepn?.hepn2_end != null) {
         viewer.addStyle(
           { resi: `${hepn.hepn2_start}-${hepn.hepn2_end}` },
-          { cartoon: { color: "#ef4444", thickness: 1.0 } },
+          { cartoon: { color: PALETTE_HEX.hepn2, thickness: 1.0 } },
         );
       }
 
@@ -91,6 +99,7 @@ export function Structure3D({ path, hepn, heightPx = 280 }: Props) {
 
     return () => {
       disposed = true;
+      ctrl.abort();
       try {
         viewerRef.current?.clear();
         viewerRef.current?.removeAllModels();
@@ -124,12 +133,19 @@ export function Structure3D({ path, hepn, heightPx = 280 }: Props) {
 }
 
 function Legend({ hepn }: { hepn?: DomainMetadata }) {
+  // F-2 fix: legend reads from the shared palette + filters out HEPN dots
+  // that aren't actually rendered for this variant.
+  const hasHepn1 = hepn?.hepn1_start != null;
+  const hasHepn2 = hepn?.hepn2_start != null;
   return (
     <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
-      <LegendDot color="#38bdf8" label="RNA/DNA" />
-      {hepn?.hepn1_start != null && <LegendDot color="#f97316" label="HEPN1" />}
-      {hepn?.hepn2_start != null && <LegendDot color="#ef4444" label="HEPN2" />}
-      <LegendDot color="#6b7280" label="other" />
+      {HEPN_LEGEND_ITEMS.filter((it) => {
+        if (it.id === "hepn1") return hasHepn1;
+        if (it.id === "hepn2") return hasHepn2;
+        return true;
+      }).map((it) => (
+        <LegendDot key={it.id} color={it.color} label={it.label} />
+      ))}
     </div>
   );
 }

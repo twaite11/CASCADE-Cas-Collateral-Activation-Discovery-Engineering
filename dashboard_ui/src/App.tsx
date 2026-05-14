@@ -11,6 +11,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Toaster } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { OptimizedSidebar } from "@/components/OptimizedSidebar";
 import { VariantDetailDrawer } from "@/components/VariantDetailDrawer";
 import { HelpPanel, useHelp } from "@/components/HelpPanel";
@@ -84,18 +85,26 @@ export default function App() {
       <TopNav />
       <div className="flex min-h-0 flex-1">
         <main className="min-w-0 flex-1 overflow-y-auto px-6 py-6">
-          <Routes>
-            <Route path="/" element={<Navigate to="/runs" replace />} />
-            <Route path="/runs" element={<RunsPage />} />
-            <Route path="/baselines" element={<BaselinesPage />} />
-            <Route path="/variants" element={<VariantsPage />} />
-            <Route path="/optimized" element={<OptimizedPage />} />
-            <Route path="/production" element={<ProductionPage />} />
-          </Routes>
+          {/* Phase-3: each route is wrapped so one bad page can't blank
+              out the whole dashboard. */}
+          <ErrorBoundary>
+            <Routes>
+              <Route path="/" element={<Navigate to="/runs" replace />} />
+              <Route path="/runs" element={<RunsPage />} />
+              <Route path="/baselines" element={<BaselinesPage />} />
+              <Route path="/variants" element={<VariantsPage />} />
+              <Route path="/optimized" element={<OptimizedPage />} />
+              <Route path="/production" element={<ProductionPage />} />
+            </Routes>
+          </ErrorBoundary>
         </main>
-        <OptimizedSidebar />
+        <ErrorBoundary>
+          <OptimizedSidebar />
+        </ErrorBoundary>
       </div>
-      <VariantDetailDrawer />
+      <ErrorBoundary>
+        <VariantDetailDrawer />
+      </ErrorBoundary>
       <HelpPanel />
       <Toaster />
     </div>

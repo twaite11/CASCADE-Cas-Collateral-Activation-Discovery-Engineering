@@ -11,7 +11,8 @@ import {
 } from "lucide-react";
 
 import { api, structureFileUrl } from "@/lib/api";
-import type { DomainMetadata } from "@/lib/types";
+import { normalizeVariant, toDomainMetadata } from "@/lib/adapters";
+import type { NormalizedVariant } from "@/lib/adapters";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
 import { useVariantDrawer } from "@/stores/variantDrawer";
@@ -73,21 +74,26 @@ function DrawerContent({
 }) {
   const detailQ = useQuery({
     queryKey: ["variant", variantId],
-    queryFn: () => api.variantDetail(variantId),
+    queryFn: ({ signal }) => api.variantDetail(variantId, signal),
     staleTime: 60_000,
   });
 
-  const v = detailQ.data ?? {};
-  const hepn = (v.domain_metadata ?? {}) as DomainMetadata;
-  const optArtifacts = (v.optimized_artifacts ?? {}) as Record<string, string>;
-  const evalArtifacts = (v.eval_artifacts ?? {}) as Record<string, string>;
-  const primaryStructure =
-    optArtifacts.structure ??
-    evalArtifacts.on_structure ??
-    evalArtifacts.off_structure ??
-    null;
+  // C-10/C-11 fix: previously this component reached into raw JSON with
+  // (v.domain_metadata as any)?.crrna_repeat ?? (v.catalog_metadata as any)?...
+  // patterns that silently fell through to null whenever the backend
+  // renamed a field.  normalizeVariant() consolidates the three data
+  // sources (domain_metadata, catalog_metadata, top-level) into one record.
+  const nv: NormalizedVariant = useMemo(
+    () => normalizeVariant(detailQ.data ?? {}),
+    [detailQ.data],
+  );
+  const hepnMeta = useMemo(() => toDomainMetadata(nv.hepn), [nv.hepn]);
+  const primaryStructure = nv.artifacts.primaryStructure;
 
-  const lineage = useMemo(() => extractLineage(v), [v]);
+  const lineage = useMemo(
+    () => extractLineage((detailQ.data ?? {}) as Record<string, unknown>),
+    [detailQ.data],
+  );
 
   function copyId() {
     navigator.clipboard.writeText(variantId).catch(() => undefined);
@@ -107,7 +113,7 @@ function DrawerContent({
             </Button>
           </div>
           <p className="truncate text-xs text-muted-foreground">
-            {String(v.baseline_id ?? "—")} · gen {String(v.generation ?? "—")}
+            {nv.baselineId ?? "—"} · gen {nv.generation ?? "—"}
           </p>
         </div>
         <Button variant="ghost" size="icon" onClick={onClose} title="Close (Esc)">
@@ -126,7 +132,7 @@ function DrawerContent({
         )}
         {detailQ.isSuccess && (
           <div className="space-y-5">
-            <MetricsGrid v={v} />
+            <MetricsGrid nv={nv} />
 
             <Card>
               <CardHeader className="pb-2">
@@ -168,18 +174,7 @@ function DrawerContent({
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <CrrnaSpacer
-                  repeat={
-                    (v.domain_metadata as any)?.crrna_repeat ??
-                    (v.catalog_metadata as any)?.crrna_repeat ??
-                    null
-                  }
-                  spacer={
-                    (v.domain_metadata as any)?.crrna_spacer ??
-                    (v.catalog_metadata as any)?.crrna_spacer ??
-                    null
-                  }
-                />
+                <CrrnaSpacer repeat={nv.crrna.repeat} spacer={nv.crrna.spacer} />
               </CardContent>
             </Card>
 
@@ -213,7 +208,7 @@ function DrawerContent({
                         </p>
                         <Structure3D
                           path={primaryStructure}
-                          hepn={hepn}
+                          hepn={hepnMeta}
                           heightPx={260}
                         />
                       </div>
@@ -222,7 +217,7 @@ function DrawerContent({
                   ) : (
                     <Structure3D
                       path={primaryStructure}
-                      hepn={hepn}
+                      hepn={hepnMeta}
                       heightPx={320}
                     />
                   )}
@@ -230,12 +225,9 @@ function DrawerContent({
               </Card>
             )}
 
-            <ArtifactsCard
-              optArtifacts={optArtifacts}
-              evalArtifacts={evalArtifacts}
-            />
+            <ArtifactsCard nv={nv} />
 
-            <RawMetadataCard data={v} />
+            <RawMetadataCard data={nv.raw} reasons={nv.optimizedReasons} />
           </div>
         )}
       </div>
@@ -246,18 +238,12 @@ function DrawerContent({
 function CompareStructure({ id }: { id: string }) {
   const q = useQuery({
     queryKey: ["variant", id],
-    queryFn: () => api.variantDetail(id),
+    queryFn: ({ signal }) => api.variantDetail(id, signal),
     staleTime: 60_000,
   });
-  const v = q.data ?? {};
-  const hepn = (v.domain_metadata ?? {}) as DomainMetadata;
-  const optArtifacts = (v.optimized_artifacts ?? {}) as Record<string, string>;
-  const evalArtifacts = (v.eval_artifacts ?? {}) as Record<string, string>;
-  const path =
-    optArtifacts.structure ??
-    evalArtifacts.on_structure ??
-    evalArtifacts.off_structure ??
-    null;
+  const nv = useMemo(() => normalizeVariant(q.data ?? {}), [q.data]);
+  const path = nv.artifacts.primaryStructure;
+  const hepnMeta = useMemo(() => toDomainMetadata(nv.hepn), [nv.hepn]);
 
   return (
     <div>
@@ -273,7 +259,7 @@ function CompareStructure({ id }: { id: string }) {
         </div>
       )}
       {q.isSuccess && path && (
-        <Structure3D path={path} hepn={hepn} heightPx={260} />
+        <Structure3D path={path} hepn={hepnMeta} heightPx={260} />
       )}
       {q.isSuccess && !path && (
         <div className="flex h-64 items-center justify-center rounded-md border bg-zinc-950 text-xs text-muted-foreground">
@@ -284,14 +270,14 @@ function CompareStructure({ id }: { id: string }) {
   );
 }
 
-function MetricsGrid({ v }: { v: Record<string, unknown> }) {
-  const cells: Array<{ label: string; value: unknown; unit?: string }> = [
-    { label: "fitness", value: v.fitness },
-    { label: "ipTM", value: v.iptm },
-    { label: "AF2-IG", value: v.af2_ig },
-    { label: "ON dist", value: v.on_dist_A, unit: "Å" },
-    { label: "OFF dist", value: v.off_dist_A, unit: "Å" },
-    { label: "HEPN Δ", value: v.hepn_shift_A, unit: "Å" },
+function MetricsGrid({ nv }: { nv: NormalizedVariant }) {
+  const cells: Array<{ label: string; value: number | null; unit?: string }> = [
+    { label: "fitness", value: nv.fitness },
+    { label: "ipTM", value: nv.iptm },
+    { label: "AF2-IG", value: nv.af2Ig },
+    { label: "ON dist", value: nv.onDistA, unit: "Å" },
+    { label: "OFF dist", value: nv.offDistA, unit: "Å" },
+    { label: "HEPN Δ", value: nv.hepnShiftA, unit: "Å" },
   ];
   return (
     <Card>
@@ -316,22 +302,20 @@ function MetricsGrid({ v }: { v: Record<string, unknown> }) {
   );
 }
 
-function ArtifactsCard({
-  optArtifacts,
-  evalArtifacts,
-}: {
-  optArtifacts: Record<string, string>;
-  evalArtifacts: Record<string, string>;
-}) {
+function ArtifactsCard({ nv }: { nv: NormalizedVariant }) {
   const links: Array<{ label: string; path: string }> = [];
-  if (optArtifacts.fasta)
-    links.push({ label: "optimized FASTA", path: optArtifacts.fasta });
-  if (optArtifacts.structure)
-    links.push({ label: "optimized structure", path: optArtifacts.structure });
-  if (optArtifacts.crrna)
-    links.push({ label: "crRNA FASTA", path: optArtifacts.crrna });
-  for (const [k, path] of Object.entries(evalArtifacts)) {
-    links.push({ label: k.replace(/_/g, " "), path });
+  const { optimized, evals } = nv.artifacts;
+  if (optimized.fasta) links.push({ label: "optimized FASTA", path: optimized.fasta });
+  if (optimized.structure)
+    links.push({ label: "optimized structure", path: optimized.structure });
+  if (optimized.crrna) links.push({ label: "crRNA FASTA", path: optimized.crrna });
+  for (const [state, blob] of [
+    ["on", evals.on],
+    ["off", evals.off],
+    ["offtarget", evals.offtarget],
+  ] as const) {
+    if (blob.structure) links.push({ label: `${state} structure`, path: blob.structure });
+    if (blob.summary) links.push({ label: `${state} summary`, path: blob.summary });
   }
 
   if (links.length === 0) return null;
@@ -361,7 +345,13 @@ function ArtifactsCard({
   );
 }
 
-function RawMetadataCard({ data }: { data: Record<string, unknown> }) {
+function RawMetadataCard({
+  data,
+  reasons,
+}: {
+  data: Record<string, unknown>;
+  reasons: string[];
+}) {
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -371,12 +361,11 @@ function RawMetadataCard({ data }: { data: Record<string, unknown> }) {
       </CardHeader>
       <CardContent>
         <div className="flex flex-wrap gap-1">
-          {Array.isArray((data as any).optimized_reasons) &&
-            ((data as any).optimized_reasons as string[]).map((r) => (
-              <Badge key={r} variant="outline">
-                {r}
-              </Badge>
-            ))}
+          {reasons.map((r) => (
+            <Badge key={r} variant="outline">
+              {r}
+            </Badge>
+          ))}
         </div>
         <details className="mt-2">
           <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
@@ -402,7 +391,7 @@ function extractLineage(v: Record<string, unknown>): string[] {
 }
 
 function formatNum(n: unknown): string {
-  if (n == null || n === "") return "—";
+  if (n === null || n === undefined || n === "") return "—";
   const num = Number(n);
   if (Number.isNaN(num)) return String(n);
   if (Math.abs(num) >= 100) return num.toFixed(1);

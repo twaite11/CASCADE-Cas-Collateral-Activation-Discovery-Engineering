@@ -1,17 +1,14 @@
 import { cn } from "@/lib/utils";
+import { NT_COLORS_TW } from "@/lib/palette";
 
 interface Props {
   repeat?: string | null;
   spacer?: string | null;
 }
 
-const NT_COLORS: Record<string, string> = {
-  A: "text-emerald-300",
-  U: "text-amber-300",
-  T: "text-amber-300",
-  G: "text-sky-300",
-  C: "text-rose-300",
-};
+// F-2: palette imported from `@/lib/palette` so this view and the structure
+// viewer never disagree on what "A" or "G" should look like.
+const NT_COLORS = NT_COLORS_TW;
 
 /**
  * Monospaced crRNA rendering: 5' — repeat — spacer — 3' with per-nucleotide
