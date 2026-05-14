@@ -81,22 +81,58 @@ Write-OK "vastai at $($vastCmd.Source)"
 # 2. Vast.ai API key
 Write-Step "Configuring Vast.ai API key..."
 $existingKeyFile = Join-Path $env:USERPROFILE ".config\vastai\vast_api_key"
-if (-not $VastApiKey) {
-    if (Test-Path $existingKeyFile) {
-        Write-OK "already set in $existingKeyFile (skipping)"
-        $env:VAST_API_KEY = (Get-Content $existingKeyFile -Raw).Trim()
+# Vast.ai API keys are EXACTLY 64 lowercase hex chars (^[a-f0-9]{64}$).  We
+# validate up front so a bad paste doesn't blow up the downstream smoke test.
+function Test-VastApiKey($k) {
+    if (-not $k) { return $false }
+    $k = $k.Trim()
+    return ($k.Length -eq 64) -and ($k -match '^[a-f0-9]{64}$')
+}
+if (-not $VastApiKey -and (Test-Path $existingKeyFile)) {
+    $saved = (Get-Content $existingKeyFile -Raw).Trim()
+    if (Test-VastApiKey $saved) {
+        Write-OK "already valid at $existingKeyFile (skipping prompt)"
+        $VastApiKey = $saved
     } else {
-        $sec = Read-Host "Paste your Vast.ai API key (from https://cloud.vast.ai/cli/)" -AsSecureString
-        $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
-        $VastApiKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
-        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        Write-Warn "key file exists but content is invalid (length=$($saved.Length), expected 64 hex chars) -- will re-prompt"
     }
 }
-if ($VastApiKey) {
-    vastai set api-key $VastApiKey | Out-Null
-    $env:VAST_API_KEY = $VastApiKey
-    Write-OK "VAST_API_KEY exported into this shell"
+if (-not $VastApiKey) {
+    # SecureString prompts have historically truncated paste on some
+    # Windows terminals.  Use plain Read-Host so paste behaviour is
+    # consistent; we wipe the local variable as soon as we hand off.
+    Write-Host ""
+    Write-Host "Where to find it:" -ForegroundColor DarkGray
+    Write-Host "  1. Log into https://cloud.vast.ai/cli/" -ForegroundColor DarkGray
+    Write-Host "  2. The 64-char hex string after '--api-key' in the displayed CLI command" -ForegroundColor DarkGray
+    Write-Host "  3. Example shape: c7f4a2...e9b1  (only 0-9 and a-f, all lowercase)" -ForegroundColor DarkGray
+    Write-Host ""
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $entered = Read-Host "Paste your Vast.ai API key (attempt $attempt/3)"
+        if (-not $entered) {
+            Write-Warn "empty input"
+            continue
+        }
+        $entered = $entered.Trim().Trim('"').Trim("'")
+        if (Test-VastApiKey $entered) {
+            $VastApiKey = $entered
+            break
+        }
+        Write-Err "rejected: got $($entered.Length) chars, expected 64 lowercase hex (^[a-f0-9]{64}$)"
+        if ($entered.Length -gt 0 -and $entered.Length -lt 64) {
+            Write-Warn "(too short -- likely a paste-truncation issue; try Ctrl+V or Ctrl+Shift+V)"
+        }
+    }
+    if (-not $VastApiKey) {
+        Write-Err "Three failed attempts. Run manually instead:"
+        Write-Host "        vastai set api-key <PASTE_64_CHAR_KEY_HERE>" -ForegroundColor DarkGray
+        Write-Host "        `$env:VAST_API_KEY = (Get-Content `"$existingKeyFile`" -Raw).Trim()" -ForegroundColor DarkGray
+        exit 1
+    }
 }
+vastai set api-key $VastApiKey | Out-Null
+$env:VAST_API_KEY = $VastApiKey
+Write-OK "VAST_API_KEY exported into this shell (64-char hex confirmed)"
 
 # 3. Dashboard API key
 Write-Step "Configuring CASCADE_API_KEY (dashboard auth)..."
