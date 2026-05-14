@@ -37,16 +37,42 @@ function Write-OK($msg)   { Write-Host "    $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "    $msg" -ForegroundColor Yellow }
 function Write-Err($msg)  { Write-Host "    $msg" -ForegroundColor Red }
 
+function Get-PythonUserScriptsDir {
+    # Use sysconfig.get_path('scripts', 'nt_user') -- gives the actual
+    # %APPDATA%\Python\PythonNNN\Scripts dir.  site.USER_BASE returns the
+    # parent on Python >=3.11, which would resolve to the wrong path.
+    try {
+        $dir = (& python -c "import sysconfig,sys; sys.stdout.write(sysconfig.get_path('scripts','nt_user'))" 2>$null)
+        if ($LASTEXITCODE -ne 0 -or -not $dir) { return $null }
+        return $dir.Trim()
+    } catch {
+        return $null
+    }
+}
+
 # 1. vastai CLI
 Write-Step "Checking vastai CLI..."
 $vastCmd = Get-Command vastai -ErrorAction SilentlyContinue
 if (-not $vastCmd) {
     Write-Warn "not found on PATH; installing via pip..."
     python -m pip install --upgrade vastai
+    # pip installs into the per-user Scripts dir which is NOT on PATH by default
+    # on Windows. Prepend it for this session so the rest of the script works.
+    $userScripts = Get-PythonUserScriptsDir
+    if ($userScripts -and (Test-Path (Join-Path $userScripts 'vastai.exe'))) {
+        $env:PATH = "$userScripts;$env:PATH"
+        Write-OK "Prepended $userScripts to PATH for this session"
+        Write-Warn "To make it permanent, run this ONCE in a fresh PowerShell window:"
+        Write-Host "        setx PATH `"$userScripts;`$env:PATH`"" -ForegroundColor DarkGray
+        Write-Warn "(Or add the dir via System Properties > Environment Variables > PATH.)"
+    }
     $vastCmd = Get-Command vastai -ErrorAction SilentlyContinue
     if (-not $vastCmd) {
         Write-Err "pip install completed but 'vastai' is still not on PATH."
-        Write-Err "Check that your Python Scripts dir is in PATH, then re-run."
+        if ($userScripts) {
+            Write-Err "Expected at: $(Join-Path $userScripts 'vastai.exe')"
+            Write-Err "Test-Path result: $(Test-Path (Join-Path $userScripts 'vastai.exe'))"
+        }
         exit 1
     }
 }
