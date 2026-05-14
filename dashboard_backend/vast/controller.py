@@ -215,17 +215,38 @@ class VastController:
                 artifacts_dir=self.artifacts_dir,
             )
 
-            # 3. PUSH INPUTS (best-effort)
+            # 3. PUSH INPUTS (retry with backoff — Vast SSH can bounce
+            #    during container startup even after wait_for_ssh returns).
+            max_upload_attempts = 4
             for p in self.inputs_to_push:
                 if not p.exists():
                     await emit(f"[controller] skip input: {p} (missing)")
                     continue
                 remote = f"/workspace/CASCADE/{p.relative_to(self.cascade_root).as_posix()}"
-                await emit(f"[controller] upload: {p} -> {remote}")
-                try:
-                    await runner.rsync_push(p, remote)
-                except Exception as exc:  # noqa: BLE001
-                    await emit(f"[controller] WARN upload failed: {exc}")
+                last_upload_err: Exception | None = None
+                for attempt in range(1, max_upload_attempts + 1):
+                    await emit(
+                        f"[controller] upload ({attempt}/{max_upload_attempts}): "
+                        f"{p.name} -> {remote}"
+                    )
+                    try:
+                        await runner.rsync_push(p, remote)
+                        last_upload_err = None
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        last_upload_err = exc
+                        if attempt < max_upload_attempts:
+                            delay = 5 * attempt
+                            await emit(
+                                f"[controller] upload attempt {attempt} failed "
+                                f"({exc}); retrying in {delay}s..."
+                            )
+                            await asyncio.sleep(delay)
+                if last_upload_err is not None:
+                    await emit(
+                        f"[controller] WARN upload failed after "
+                        f"{max_upload_attempts} attempts: {last_upload_err}"
+                    )
 
             # 4. STREAM: the orchestrator is already running via --onstart-cmd,
             #    so we attach to its tee'd log with a follow tail.
@@ -240,15 +261,30 @@ class VastController:
             )
             await emit(f"[controller] remote tail exited rc={rc}")
 
-            # 5. PULL ARTIFACTS
+            # 5. PULL ARTIFACTS (with retry — network can be flaky at end of run)
             store.update(run_id, status=RunStatus.SYNCING)
             remote_artifacts = f"/workspace/CASCADE/outputs/runs/{run_id}/"
             local_artifacts = self.artifacts_dir / run_id
-            await emit(f"[controller] download artifacts: {remote_artifacts} -> {local_artifacts}")
-            try:
-                await runner.rsync_pull(remote_artifacts, local_artifacts)
-            except Exception as exc:  # noqa: BLE001
-                await emit(f"[controller] WARN download failed: {exc}")
+            pull_ok = False
+            for attempt in range(1, 4):
+                await emit(
+                    f"[controller] download artifacts ({attempt}/3): "
+                    f"{remote_artifacts} -> {local_artifacts}"
+                )
+                try:
+                    await runner.rsync_pull(remote_artifacts, local_artifacts)
+                    pull_ok = True
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    if attempt < 3:
+                        delay = 5 * attempt
+                        await emit(
+                            f"[controller] download attempt {attempt} failed "
+                            f"({exc}); retrying in {delay}s..."
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        await emit(f"[controller] WARN download failed after 3 attempts: {exc}")
 
             # 6. PROMOTE
             try:

@@ -226,20 +226,57 @@ class SshRunner:
             client_keys=client_keys,
         )
 
-    async def wait_for_ssh(self, *, total_timeout: float = 300.0, interval: float = 6.0) -> None:
-        """Poll until an SSH connection succeeds. Swallows transient errors."""
+    async def wait_for_ssh(
+        self,
+        *,
+        total_timeout: float = 300.0,
+        interval: float = 6.0,
+        stabilize_checks: int = 2,
+        stabilize_gap: float = 5.0,
+    ) -> None:
+        """Poll until SSH is reliably up.
+
+        Vast.ai instances often accept one connection during container boot
+        then bounce SSHD, causing the very next ``scp``/``rsync`` to hit
+        ``[WinError 1225] The remote computer refused the network connection``.
+
+        After the first successful handshake we wait ``stabilize_gap`` seconds
+        and re-check ``stabilize_checks`` times.  Only if all checks pass do
+        we declare the host stable.
+        """
         loop = asyncio.get_event_loop()
         deadline = loop.time() + total_timeout
         last_err: Exception | None = None
+
         while loop.time() < deadline:
             try:
                 conn = await self._connect()
                 conn.close()
                 await conn.wait_closed()
-                return
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
                 await asyncio.sleep(interval)
+                continue
+
+            # First handshake OK — run stabilization pings.
+            stable = True
+            for _ in range(stabilize_checks):
+                await asyncio.sleep(stabilize_gap)
+                if loop.time() > deadline:
+                    break
+                try:
+                    conn = await self._connect()
+                    conn.close()
+                    await conn.wait_closed()
+                except Exception as exc:  # noqa: BLE001
+                    last_err = exc
+                    stable = False
+                    break
+            if stable:
+                return
+            log.info("SSH bounced during stabilization; retrying...")
+            await asyncio.sleep(interval)
+
         raise TimeoutError(f"SSH not ready after {total_timeout}s: {last_err}")
 
     # ------------------------------------------------------------- sync
