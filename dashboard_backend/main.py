@@ -1,5 +1,23 @@
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# Windows asyncio policy fix (MUST run before any asyncio import elsewhere).
+# Python 3.8+ ships with WindowsProactorEventLoopPolicy as the documented
+# default, but uvicorn / FastAPI / Python 3.14 builds have all shipped
+# regressions where SelectorEventLoop ends up active, which cannot spawn
+# subprocesses (asyncio.create_subprocess_exec -> NotImplementedError).
+# The vastai-CLI shellout from VastProvisioner is the canary here: every
+# /api/vast/offers and /api/runs POST hits subprocess_exec.  Forcing Proactor
+# at module load fixes both routes without changing any caller code.
+# ---------------------------------------------------------------------------
+import sys as _sys
+if _sys.platform == "win32":
+    import asyncio as _asyncio
+    try:
+        _asyncio.set_event_loop_policy(_asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:  # noqa: BLE001 -- some embedded interpreters lack it
+        pass
+
 import logging
 import os
 from pathlib import Path
