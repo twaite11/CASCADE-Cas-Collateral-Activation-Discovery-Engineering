@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Cpu, Zap, DollarSign, Rocket, RefreshCw, Split } from "lucide-react";
@@ -39,7 +39,12 @@ export function LaunchRunDialog({
   const [gpuName, setGpuName] = useState("A100_SXM4");
   const [minVram, setMinVram] = useState(40);
   const [maxDph, setMaxDph] = useState<number | "">(1.5);
+  /** Pooled launch or baseline #0 in fan-out with "same offer" lock. */
   const [offerId, setOfferId] = useState<number | null>(null);
+  /** Fan-out only: baseline_id -> vast offer ask id (separate GPUs / racks). */
+  const [offerByBaselineId, setOfferByBaselineId] = useState<Record<string, number>>({});
+  /** When true (default ON for fan-out), each parallel POST uses its own selected offer ID. */
+  const [distinctOffersPerBaseline, setDistinctOffersPerBaseline] = useState(true);
 
   const [maxGenerations, setMaxGenerations] = useState(12);
   const [variantsPerGen, setVariantsPerGen] = useState(5);
@@ -57,13 +62,13 @@ export function LaunchRunDialog({
 
   const offersQ = useQuery({
     enabled: open,
-    queryKey: ["vast-offers", { gpuName, minVram, maxDph }],
+    queryKey: ["vast-offers", { gpuName, minVram, maxDph, wideList: fanOut }],
     queryFn: () =>
       api.listOffers({
         gpu_name: gpuName,
         min_vram_gb: minVram,
         max_dph_total: maxDph === "" ? undefined : maxDph,
-        limit: 12,
+        limit: fanOut ? 36 : 12,
       }),
   });
 
@@ -78,11 +83,90 @@ export function LaunchRunDialog({
   // cost is N x dph.  In single-VPS mode there's just one VPS.
   const willFanOut = fanOut && selected.length > 1;
   const fleetSize = willFanOut ? selected.length : 1;
-  const estimateCostPerHour =
-    picked?.dph_total != null ? picked.dph_total * fleetSize : null;
+
+  const selectedKey = useMemo(
+    () => selected.map((s) => s.baseline_id).join("|"),
+    [selected],
+  );
+
+  const offerIdFingerprint = useMemo(
+    () => offers.map((o) => o.id).join(","),
+    [offers],
+  );
+
+  // Fan-out + distinct offers: stagger defaults across rows so parallel
+  // rentals target different GPU slots instead of cloning the same ask id three times.
+  useEffect(() => {
+    if (!open || offers.length === 0) return;
+    if (!willFanOut || !distinctOffersPerBaseline || selected.length === 0)
+      return;
+    setOfferByBaselineId((prev) => {
+      const next: Record<string, number> = {};
+      for (let idx = 0; idx < selected.length; idx++) {
+        const b = selected[idx];
+        const old = prev[b.baseline_id];
+        const retains =
+          typeof old === "number" && offers.some((o) => o.id === old);
+        if (retains) {
+          next[b.baseline_id] = old!;
+        } else {
+          next[b.baseline_id] =
+            offers[idx % offers.length]?.id ?? offers[0]!.id;
+        }
+      }
+      return next;
+    });
+  }, [
+    open,
+    willFanOut,
+    distinctOffersPerBaseline,
+    selectedKey,
+    offerIdFingerprint,
+  ]);
+
+  useEffect(() => {
+    if (!open || offers.length === 0) return;
+    if (willFanOut && distinctOffersPerBaseline) return;
+    const currentValid =
+      offerId != null && offers.some((o) => o.id === offerId);
+    if (!currentValid) {
+      setOfferId(offers[0]?.id ?? null);
+    }
+  }, [open, willFanOut, distinctOffersPerBaseline, offerIdFingerprint, offerId]);
+
+  const estimateCostPerHour = useMemo(() => {
+    if (offers.length === 0 || selected.length === 0) return null;
+    if (willFanOut && distinctOffersPerBaseline && selected.length > 1) {
+      let sum = 0;
+      for (const b of selected) {
+        const oid = offerByBaselineId[b.baseline_id];
+        const o =
+          oid != null ? offers.find((x) => x.id === oid) : undefined;
+        if (o?.dph_total == null) return null;
+        sum += o.dph_total;
+      }
+      return sum;
+    }
+    if (picked?.dph_total == null) return null;
+    return picked.dph_total * fleetSize;
+  }, [
+    offers,
+    selected,
+    willFanOut,
+    distinctOffersPerBaseline,
+    offerByBaselineId,
+    picked,
+    fleetSize,
+  ]);
+
+  const launchOffersReady =
+    selected.length > 0 &&
+    (willFanOut && distinctOffersPerBaseline
+      ? selected.every((b) => typeof offerByBaselineId[b.baseline_id] === "number")
+      : offerId != null);
 
   async function handleLaunch() {
-    if (!offerId || selected.length === 0) return;
+    if (!launchOffersReady) return;
     setLaunching(true);
     setLaunchProgress(null);
     try {
@@ -99,7 +183,10 @@ export function LaunchRunDialog({
               .launchRun({
                 baseline_ids: [b.baseline_id],
                 crrna_lookup_ids: [b.crrna_lookup_id],
-                offer_id: offerId,
+                offer_id:
+                  distinctOffersPerBaseline
+                    ? offerByBaselineId[b.baseline_id]!
+                    : offerId!,
                 max_generations: maxGenerations,
                 variants_per_gen: variantsPerGen,
                 workers: 1,
@@ -138,7 +225,7 @@ export function LaunchRunDialog({
         const run = await api.launchRun({
           baseline_ids: selected.map((b) => b.baseline_id),
           crrna_lookup_ids: selected.map((b) => b.crrna_lookup_id),
-          offer_id: offerId,
+          offer_id: offerId!,
           max_generations: maxGenerations,
           variants_per_gen: variantsPerGen,
           workers,
@@ -246,22 +333,33 @@ export function LaunchRunDialog({
                     </td>
                   </tr>
                 )}
-                {offers.map((o) => (
+                {offers.map((o) => {
+                  const useBrowseRadios =
+                    !willFanOut || !distinctOffersPerBaseline;
+                  return (
                   <tr
                     key={o.id}
                     className={cn(
-                      "cursor-pointer border-b hover:bg-muted/40",
-                      offerId === o.id && "bg-primary/10",
+                      useBrowseRadios && "cursor-pointer hover:bg-muted/40",
+                      "border-b",
+                      offerId === o.id && useBrowseRadios && "bg-primary/10",
                     )}
-                    onClick={() => setOfferId(o.id)}
+                    onClick={
+                      useBrowseRadios ? () => setOfferId(o.id) : undefined
+                    }
                   >
                     <td className="p-2">
+                      {useBrowseRadios ? (
                       <input
                         type="radio"
                         checked={offerId === o.id}
                         onChange={() => setOfferId(o.id)}
                         className="accent-primary"
                       />
+                      ) : (
+                      <span className="inline-block h-4 w-4 px-px text-muted-foreground"
+                        aria-hidden />
+                      )}
                     </td>
                     <td className="p-2">
                       {o.num_gpus ?? 1}× {o.gpu_name ?? "?"}
@@ -283,9 +381,16 @@ export function LaunchRunDialog({
                         : "—"}
                     </td>
                   </tr>
-                ))}
+                );
+                })}
               </tbody>
             </table>
+            {willFanOut && distinctOffersPerBaseline && (
+              <p className="text-xs text-muted-foreground px-2 pt-1">
+                With per-enzyme offers enabled, the GPU table above is for
+                comparison only — assign each VPS using the selectors below.
+              </p>
+            )}
           </div>
         </section>
 
@@ -313,6 +418,81 @@ export function LaunchRunDialog({
                 </p>
               </div>
             </label>
+
+            {willFanOut && (
+              <>
+                <label className="ml-10 flex cursor-pointer items-start gap-3 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={distinctOffersPerBaseline}
+                    onChange={(e) => {
+                      const on = e.target.checked;
+                      setDistinctOffersPerBaseline(on);
+                      if (!on && offers.length && selected.length) {
+                        const seed =
+                          offerByBaselineId[selected[0]!.baseline_id] ??
+                          offerId ??
+                          offers[0]?.id ??
+                          null;
+                        if (seed != null) setOfferId(seed);
+                      }
+                    }}
+                    disabled={launching}
+                    className="mt-1 h-3.5 w-3.5 accent-primary"
+                  />
+                  <div>
+                    <span className="font-medium">
+                      Dedicated Vast.ai offer ID per enzyme
+                    </span>
+                    <p className="text-muted-foreground">
+                      Default ON: each POST sends a different Vast.ai offer ID
+                      (chosen below)—less contention than cloning one ask multiple
+                      times. Turn off only if every run must share one listing.
+                    </p>
+                  </div>
+                </label>
+
+                {distinctOffersPerBaseline && offers.length > 0 && (
+                  <div className="ml-10 mt-4 space-y-2 rounded-md border border-border bg-muted/20 p-3">
+                    <div className="text-xs font-medium uppercase text-muted-foreground">
+                      Assign offer per enzyme
+                    </div>
+                    <div className="max-h-48 space-y-2 overflow-y-auto">
+                      {selected.map((b) => (
+                        <div
+                          key={b.baseline_id}
+                          className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3"
+                        >
+                          <label
+                            className="shrink-0 font-mono text-[11px] text-muted-foreground sm:w-[30%]"
+                            title={b.baseline_id}
+                          >
+                            {baselineShort(b.baseline_id)}
+                          </label>
+                          <select
+                            value={offerByBaselineId[b.baseline_id] ?? ""}
+                            onChange={(ev) =>
+                              setOfferByBaselineId((prev) => ({
+                                ...prev,
+                                [b.baseline_id]: Number(ev.target.value),
+                              }))
+                            }
+                            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                          >
+                            {offers.map((o) => (
+                              <option key={o.id} value={o.id}>
+                                #{o.id} · {formatDph(o.dph_total)} ·{" "}
+                                {o.datacenter ?? "?"} ({o.gpu_name ?? "GPU"})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
           </section>
         )}
 
@@ -353,12 +533,20 @@ export function LaunchRunDialog({
             <DollarSign className="h-4 w-4" />
             <span>
               {fleetSize} VPS instance{fleetSize === 1 ? "" : "s"}
-              {picked && (
-                <>
-                  {" @ "}
-                  <span className="font-mono">{formatDph(picked.dph_total)}</span>
-                  {fleetSize > 1 && <span> each</span>}
-                </>
+              {willFanOut &&
+              distinctOffersPerBaseline &&
+              selected.length > 1 ? (
+                <span className="text-muted-foreground">
+                  {" "}(each offer chosen below)
+                </span>
+              ) : (
+                picked && (
+                  <>
+                    {" @ "}
+                    <span className="font-mono">{formatDph(picked.dph_total)}</span>
+                    {fleetSize > 1 && <span> each</span>}
+                  </>
+                )
               )}
             </span>
           </div>
@@ -375,7 +563,7 @@ export function LaunchRunDialog({
           </Button>
           <Button
             onClick={handleLaunch}
-            disabled={!offerId || selected.length === 0 || launching}
+            disabled={!launchOffersReady || launching}
           >
             <Rocket className="mr-2 h-4 w-4" />
             {launching
@@ -390,6 +578,11 @@ export function LaunchRunDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function baselineShort(full: string) {
+  if (full.length <= 48) return full;
+  return `${full.slice(0, 22)}…${full.slice(-20)}`;
 }
 
 function LabeledInput({
