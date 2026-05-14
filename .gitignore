@@ -12,6 +12,11 @@ build/
 venv/
 env/
 
+# Local secrets (never commit)
+.env
+.env.local
+.env.*.local
+
 # IDE
 .vscode/
 .idea/
