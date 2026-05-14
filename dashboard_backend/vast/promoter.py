@@ -20,12 +20,26 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
 log = logging.getLogger(__name__)
+
+
+# When Option B fan-out is used, the FastAPI controller process can have
+# three runs finishing within milliseconds of each other, all calling
+# promote_run() concurrently from the asyncio loop's default thread pool.
+# Step 2 below (appending to rl_training_dataset.jsonl) is the *only*
+# shared write surface that lacks per-run scoping (every other artifact
+# is `<run_id>__`-prefixed), so it needs a process-wide mutex.  Without
+# it, two concurrent fout.write() calls can interleave bytes inside a
+# single record and produce malformed JSONL that DashboardService.load
+# then drops with a warning.
+_RL_APPEND_LOCK = threading.Lock()
 
 
 @dataclass
@@ -110,17 +124,55 @@ def promote_run(
 
     # 2. Append the RL dataset records to the canonical JSONL so the
     #    dashboard's DashboardService.load_variants() picks them up.
+    #
+    #    Three concurrency hardening steps for parallel runs (Option B fan-out):
+    #      a. Hold ``_RL_APPEND_LOCK`` for the whole merge so two promoters
+    #         can't interleave bytes inside one record.
+    #      b. Skip any malformed line in the source instead of poisoning the
+    #         destination (mirrors the C-17 aggregator behaviour).
+    #      c. Open the destination with O_APPEND and fsync() at the end so a
+    #         controller crash mid-merge doesn't lose committed records.
     rl_src = run_root / _RL_SUBPATH[0]
     rl_dest = cascade_root / _RL_SUBPATH[1]
     if rl_src.exists():
         rl_dest.parent.mkdir(parents=True, exist_ok=True)
-        with rl_src.open("r", encoding="utf-8") as fin, rl_dest.open(
-            "a", encoding="utf-8"
-        ) as fout:
+        # Pre-collect and validate records OUTSIDE the lock so the critical
+        # section is as short as possible.
+        valid_lines: list[str] = []
+        dropped = 0
+        with rl_src.open("r", encoding="utf-8") as fin:
             for line in fin:
-                if line.strip():
-                    fout.write(line.rstrip("\n") + "\n")
-                    report.appended_records += 1
+                line = line.rstrip("\r\n")
+                if not line.strip():
+                    continue
+                try:
+                    import json as _json
+                    _json.loads(line)
+                except Exception:  # noqa: BLE001
+                    dropped += 1
+                    continue
+                valid_lines.append(line + "\n")
+        if dropped:
+            log.warning(
+                "promote_run: dropped %d malformed lines from %s", dropped, rl_src
+            )
+        if valid_lines:
+            payload = "".join(valid_lines).encode("utf-8")
+            with _RL_APPEND_LOCK:
+                fd = os.open(
+                    str(rl_dest),
+                    os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                    0o644,
+                )
+                try:
+                    os.write(fd, payload)
+                    try:
+                        os.fsync(fd)
+                    except OSError:
+                        pass
+                finally:
+                    os.close(fd)
+            report.appended_records += len(valid_lines)
 
     # 3. Best-effort cache invalidate on the DashboardService singleton.
     if service_cache_bump is not None and hasattr(service_cache_bump, "invalidate"):

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any
 
 from fastapi import (
@@ -43,7 +44,12 @@ router = APIRouter(prefix="/api", tags=["runs"])
 # ---------------------------------------------------------------------------
 # Dependency graph (singletons bound to process lifetime)
 # ---------------------------------------------------------------------------
+# Option B (per-baseline fan-out) means three POST /api/runs can race the
+# first-time lazy init of these singletons.  A simple module-wide lock
+# serialises the check-then-create double-bookkeeping; subsequent calls
+# hit the fast path under the lock with a sub-microsecond cost.
 _state: dict[str, Any] = {}
+_state_lock = threading.Lock()
 
 
 def _config() -> DashboardConfig:
@@ -51,18 +57,20 @@ def _config() -> DashboardConfig:
 
 
 def get_store(config: DashboardConfig = Depends(_config)) -> RunsStore:
-    store = _state.get("store")
-    if store is None:
-        store = RunsStore(config.runs_db_path)
-        _state["store"] = store
+    with _state_lock:
+        store = _state.get("store")
+        if store is None:
+            store = RunsStore(config.runs_db_path)
+            _state["store"] = store
     return store
 
 
 def get_provisioner() -> VastProvisioner:
-    prov = _state.get("provisioner")
-    if prov is None:
-        prov = VastProvisioner()
-        _state["provisioner"] = prov
+    with _state_lock:
+        prov = _state.get("provisioner")
+        if prov is None:
+            prov = VastProvisioner()
+            _state["provisioner"] = prov
     return prov
 
 
@@ -76,8 +84,10 @@ def get_controller(
     provisioner: VastProvisioner = Depends(get_provisioner),
     hub: LogHub = Depends(get_hub),
 ) -> VastController:
-    ctrl = _state.get("controller")
-    if ctrl is None:
+    with _state_lock:
+        ctrl = _state.get("controller")
+        if ctrl is not None:
+            return ctrl
         inputs_to_push = [
             config.cascade_root / "metadata",
             config.cascade_root / "jsons",
