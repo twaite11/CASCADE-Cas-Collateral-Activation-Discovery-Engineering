@@ -221,11 +221,11 @@ class VastController:
                     await emit(f"[controller] skip input: {p} (missing)")
                     continue
                 remote = f"/workspace/CASCADE/{p.relative_to(self.cascade_root).as_posix()}"
-                await emit(f"[controller] rsync push: {p} -> {remote}")
+                await emit(f"[controller] upload: {p} -> {remote}")
                 try:
                     await runner.rsync_push(p, remote)
                 except Exception as exc:  # noqa: BLE001
-                    await emit(f"[controller] WARN rsync push failed: {exc}")
+                    await emit(f"[controller] WARN upload failed: {exc}")
 
             # 4. STREAM: the orchestrator is already running via --onstart-cmd,
             #    so we attach to its tee'd log with a follow tail.
@@ -244,11 +244,11 @@ class VastController:
             store.update(run_id, status=RunStatus.SYNCING)
             remote_artifacts = f"/workspace/CASCADE/outputs/runs/{run_id}/"
             local_artifacts = self.artifacts_dir / run_id
-            await emit(f"[controller] rsync pull: {remote_artifacts} -> {local_artifacts}")
+            await emit(f"[controller] download artifacts: {remote_artifacts} -> {local_artifacts}")
             try:
                 await runner.rsync_pull(remote_artifacts, local_artifacts)
             except Exception as exc:  # noqa: BLE001
-                await emit(f"[controller] WARN rsync pull failed: {exc}")
+                await emit(f"[controller] WARN download failed: {exc}")
 
             # 6. PROMOTE
             try:

@@ -22,6 +22,7 @@ import contextlib
 import json
 import logging
 import os
+import posixpath
 import shlex
 import shutil
 import subprocess
@@ -72,6 +73,35 @@ def _known_hosts_path() -> str:
 # CASCADE_RSYNC_TIMEOUT (seconds); default 10 minutes is enough for our
 # multi-GB artifacts dir.
 DEFAULT_RSYNC_TIMEOUT_S = float(os.environ.get("CASCADE_RSYNC_TIMEOUT", "600"))
+
+
+def _sync_executable() -> tuple[str, str]:
+    """Prefer ``rsync``; otherwise fall back to OpenSSH ``scp``.
+
+    Vanilla Windows desktops often omit ``rsync`` on PATH --- that surfaces as
+    WinError 2 (file-not-found).  Bundled ``scp.exe`` works for our push/pull."""
+    preferred = os.environ.get("CASCADE_SYNC_BIN", "").strip()
+    if preferred:
+        p = preferred if Path(preferred).is_file() else shutil.which(preferred)
+        if not p:
+            raise RuntimeError(
+                f"CASCADE_SYNC_BIN={preferred!r} does not resolve to an executable. "
+                "Clear CASCADE_SYNC_BIN to auto-detect, or supply a path to rsync.exe / scp.exe."
+            )
+        base = Path(p).name.lower()
+        kind = "rsync" if "rsync" in base else "scp"
+        return str(Path(p)), kind
+
+    if which := shutil.which("rsync"):
+        return which, "rsync"
+    if which := shutil.which("scp"):
+        return which, "scp"
+
+    raise RuntimeError(
+        "Neither ``rsync`` nor ``scp`` was found on PATH. On Windows enable OpenSSH "
+        "Client (provides ``scp.exe``), install cwRsync/Git-Bash rsync, or use WSL. "
+        "You can also set CASCADE_SYNC_BIN to the full path to rsync.exe or scp.exe."
+    )
 
 
 @dataclass
@@ -156,11 +186,12 @@ class SshEndpoint:
 
 
 class SshRunner:
-    """Streams remote process output and handles rsync syncs.
+    """Streams remote process output and syncs artifacts.
 
-    The streaming path uses ``asyncssh.connect(...).run(...)`` with live
-    stdout capture; file sync uses a subprocess call to the system ``rsync``
-    binary because it handles delta transfers and partial files natively.
+    Streaming uses AsyncSSH ``create_process``.  File sync prefers the
+    system ``rsync`` binary when present; otherwise it falls back to OpenSSH's
+    ``scp -r``, which resolves the usual Windows symptom ``[WinError 2]``
+    ``The system cannot find the file specified`` when ``rsync`` is not on PATH.
     """
 
     def __init__(
@@ -213,49 +244,128 @@ class SshRunner:
 
     # ------------------------------------------------------------- sync
 
-    async def rsync_push(self, local: Path, remote: str) -> None:
-        """Push local dir/file to the remote path over rsync+ssh."""
-        await self._rsync(str(local), f"{self.endpoint.user}@{self.endpoint.host}:{remote}")
+    def _scp_ssh_options(self) -> list[str]:
+        """OpenSSH ``scp`` flags (−P for port, −i identity, −o KnownHosts...)."""
+        ep = self.endpoint
+        opts: list[str] = [
+            "-P",
+            str(ep.port),
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            f"UserKnownHostsFile={_known_hosts_path()}",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "BatchMode=yes",
+        ]
+        if ep.key_path:
+            opts.extend(["-i", ep.key_path])
+        return opts
 
-    async def rsync_pull(self, remote: str, local: Path) -> None:
-        """Pull the remote dir/file to a local path."""
-        local.parent.mkdir(parents=True, exist_ok=True)
-        await self._rsync(f"{self.endpoint.user}@{self.endpoint.host}:{remote}", str(local))
+    async def _ensure_remote_parent(self, remote_dest: str) -> None:
+        """Ensure POSIX parent dirs exist before ``scp`` (rsync creates them implicitly)."""
+        parent = posixpath.dirname(remote_dest.rstrip("/"))
+        if not parent or parent == ".":
+            return
+        conn = await self._connect()
+        async with conn:
+            r = await conn.run(f"mkdir -p {shlex.quote(parent)}")
+            status = getattr(r, "exit_status", None) or getattr(r, "returncode", None)
+            if status not in {0, None}:
+                err = getattr(r, "stderr", "")
+                raise RuntimeError(
+                    f"remote mkdir failed for {remote_dest!r} (exit {status}): {err}"
+                )
 
-    async def _rsync(self, src: str, dest: str) -> None:
-        rsync = shutil.which("rsync") or "rsync"
-        ssh_cmd = "ssh " + " ".join(self.endpoint.ssh_args())
-        cmd = [rsync, "-azP", "--partial", "-e", ssh_cmd, src, dest]
-        log.info("rsync: %s -> %s", src, dest)
+    async def _run_sync_subproc(self, argv: list[str]) -> tuple[bytes, bytes, int]:
         proc = await asyncio.create_subprocess_exec(
-            *cmd,
+            *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        # C-6 fix: bound the wait so a wedged remote can't pin the event loop.
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(), timeout=DEFAULT_RSYNC_TIMEOUT_S
+                proc.communicate(),
+                timeout=DEFAULT_RSYNC_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
-            # Best-effort cleanup so we don't leak the child process.
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            except ProcessLookupError:
-                pass
             with contextlib.suppress(Exception):
                 await proc.wait()
+            label = argv[0] if argv else "sync"
             raise RuntimeError(
-                f"rsync timed out after {DEFAULT_RSYNC_TIMEOUT_S:.0f}s: "
-                f"{src} -> {dest}"
+                f"{label} timed out after {DEFAULT_RSYNC_TIMEOUT_S:.0f}s "
+                f"({' '.join(shlex.quote(x) for x in argv[1:6])})"
             )
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"rsync failed ({proc.returncode}): {stderr_b.decode(errors='replace')}"
-            )
-        log.debug("rsync ok: %s bytes", len(stdout_b))
+        return stdout_b, stderr_b, int(proc.returncode or 0)
 
-    # ------------------------------------------------- remote execution
+    async def rsync_push(self, local: Path, remote: str) -> None:
+        """Push local dir/file to the remote path (rsync, or native ``scp`` on Windows)."""
+        exe, kind = _sync_executable()
+        local_path = Path(local).resolve()
+        uri = f"{self.endpoint.user}@{self.endpoint.host}:{remote}"
+
+        if kind == "scp":
+            await self._ensure_remote_parent(remote)
+            argv = [exe, "-B", "-C", *self._scp_ssh_options()]
+            if local_path.is_dir():
+                argv.append("-r")
+            argv.extend([str(local_path), uri])
+            log.info("scp push: %s -> %s", local_path, uri)
+            _out, err, rc = await self._run_sync_subproc(argv)
+            if rc != 0:
+                raise RuntimeError(
+                    f"scp push failed ({rc}): {err.decode(errors='replace')}"
+                )
+            return
+
+        ssh_cmd = "ssh " + " ".join(shlex.quote(x) for x in self.endpoint.ssh_args())
+        argv = [exe, "-azP", "--partial", "-e", ssh_cmd, str(local_path), uri]
+        log.info("rsync push: %s -> %s", local_path, uri)
+        _out, err, rc = await self._run_sync_subproc(argv)
+        if rc != 0:
+            raise RuntimeError(
+                f"rsync push failed ({rc}): {err.decode(errors='replace')}"
+            )
+
+    async def rsync_pull(self, remote: str, local: Path) -> None:
+        """Pull remote dir/file to a local path (rsync preferred; ``scp`` fallback)."""
+        exe, kind = _sync_executable()
+        local_path = Path(local)
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        uri_auth = f"{self.endpoint.user}@{self.endpoint.host}"
+
+        if kind == "scp":
+            if remote.endswith("/"):
+                rp = posixpath.normpath(remote.rstrip("/"))
+                local_path.mkdir(parents=True, exist_ok=True)
+                src_uri = f"{uri_auth}:{rp}/."
+                dest_dir = str(local_path.resolve())
+                if not dest_dir.endswith(os.sep):
+                    dest_dir = dest_dir + os.sep
+            else:
+                src_uri = f"{uri_auth}:{remote}"
+                dest_dir = str(local_path.resolve())
+            argv = [exe, "-B", "-C", *self._scp_ssh_options(), "-r", src_uri, dest_dir]
+            log.info("scp pull: %s -> %s", src_uri, dest_dir)
+            _out, err, rc = await self._run_sync_subproc(argv)
+            if rc != 0:
+                raise RuntimeError(
+                    f"scp pull failed ({rc}): {err.decode(errors='replace')}"
+                )
+            return
+
+        uri_base = f"{uri_auth}:{remote}"
+        ssh_cmd = "ssh " + " ".join(shlex.quote(x) for x in self.endpoint.ssh_args())
+        argv = [exe, "-azP", "--partial", "-e", ssh_cmd, uri_base, str(local_path)]
+        log.info("rsync pull: %s -> %s", uri_base, local_path)
+        _out, err, rc = await self._run_sync_subproc(argv)
+        if rc != 0:
+            raise RuntimeError(
+                f"rsync pull failed ({rc}): {err.decode(errors='replace')}"
+            )
 
     async def run_stream(
         self,
