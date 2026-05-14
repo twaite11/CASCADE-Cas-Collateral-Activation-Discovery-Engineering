@@ -131,7 +131,7 @@ def structure_file(path: str) -> FileResponse:
     return FileResponse(full_path)
 
 
-@app.get("/")
+@app.get("/", response_model=None)
 def root_index() -> FileResponse | dict:
     index = frontend_dir / "index.html"
     if index.exists():
