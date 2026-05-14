@@ -47,6 +47,8 @@ def _write_fake_vastai_stdout(dir_: Path, stdout_payload: str, *, exit_code: int
 
 @pytest.mark.asyncio
 async def test_search_offers_parses_raw(tmp_path):
+    # Legacy MB-based payload (older Vast.ai API versions).  Our auto-detect
+    # heuristic should still report 80 GB / 128 GB.
     payload = json.dumps(
         [
             {
@@ -73,7 +75,58 @@ async def test_search_offers_parses_raw(tmp_path):
     assert offers[0].id == 12345
     assert offers[0].gpu_name == "A100_SXM4"
     assert offers[0].gpu_ram_gb == pytest.approx(80.0, rel=0.01)
+    assert offers[0].cpu_ram_gb == pytest.approx(128.0, rel=0.01)
     assert offers[0].dph_total == 1.42
+
+
+@pytest.mark.asyncio
+async def test_search_offers_handles_modern_gb_payload(tmp_path):
+    """Vast.ai's current API returns gpu_ram/cpu_ram in GB already (verified
+    empirically: 80GB A100s come back as 81.9, 256GB hosts as 258).  Make
+    sure the parser doesn't divide by 1024 again and report 0.08 GB cards."""
+    payload = json.dumps(
+        [
+            {
+                "id": 21050977,
+                "gpu_name": "A100_SXM4",
+                "num_gpus": 1,
+                "gpu_ram": 81.9,
+                "cpu_cores": 8,
+                "cpu_ram": 129.0,
+                "disk_space": 1418.0,
+                "dph_total": 0.8683,
+                "inet_down": 5602.1,
+                "inet_up": 2621.6,
+                "datacenter": "Sweden,_SE",
+                "reliability2": 0.999,
+            }
+        ]
+    )
+    binpath = _write_fake_vastai_stdout(tmp_path, payload)
+    prov = VastProvisioner(bin_path=str(binpath))
+    offers = await prov.search_offers(limit=1)
+    assert len(offers) == 1
+    assert offers[0].gpu_ram_gb == pytest.approx(81.9, rel=0.001), (
+        f"GB-already payload was wrongly divided again -> {offers[0].gpu_ram_gb} "
+        "(would silently filter every modern A100 out of results)"
+    )
+    assert offers[0].cpu_ram_gb == pytest.approx(129.0, rel=0.001)
+
+
+def test_offers_api_uses_gb_units_in_gpu_ram_filter():
+    """C-? unit-mismatch fix: when min_vram_gb=40 we should send
+    ``gpu_ram>=40``, NOT ``gpu_ram>=40960`` (the latter matches zero offers
+    because Vast's filter expects GB).  Source-level audit so a future
+    refactor can't silently bring back the bug."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "dashboard_backend" / "api" / "runs.py").read_text(encoding="utf-8")
+    assert "gpu_ram>={min_vram_gb}" in src or 'gpu_ram>={min_vram_gb}"' in src, (
+        "/api/vast/offers must filter on raw min_vram_gb (GB), not min_vram_gb*1024 (MB). "
+        "Verified empirically: gpu_ram>=38912 returns zero A100 offers."
+    )
+    assert "min_vram_gb * 1024" not in src, (
+        "The *1024 multiplier was the bug -- it asked Vast for >=38912 GB VRAM."
+    )
 
 
 @pytest.mark.asyncio

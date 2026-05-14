@@ -168,15 +168,25 @@ class VastProvisioner:
 
     @staticmethod
     def _offer_from_raw(row: dict[str, Any]) -> VastOffer:
-        gpu_ram_mb = _maybe_float(row.get("gpu_ram"))
-        cpu_ram_mb = _maybe_float(row.get("cpu_ram"))
+        # Vast.ai's recent API returns ``gpu_ram`` and ``cpu_ram`` in GB
+        # already (verified empirically: 80GB A100s come back as 81.9; 256GB
+        # RAM hosts come back as 258).  Older versions returned MB.  Auto-
+        # detect by magnitude: any GPU larger than 1024 must be MB; any GPU
+        # smaller is GB.  Same heuristic for system RAM with a 2048 cutoff.
+        def _normalize_ram(raw: float | None, mb_threshold: float) -> float | None:
+            if raw is None:
+                return None
+            return raw / 1024 if raw >= mb_threshold else raw
+
+        gpu_ram_gb = _normalize_ram(_maybe_float(row.get("gpu_ram")), 1024)
+        cpu_ram_gb = _normalize_ram(_maybe_float(row.get("cpu_ram")), 2048)
         return VastOffer(
             id=int(row.get("id") or row.get("ask_id") or 0),
             gpu_name=row.get("gpu_name"),
             num_gpus=row.get("num_gpus"),
-            gpu_ram_gb=(gpu_ram_mb / 1024) if gpu_ram_mb else None,
+            gpu_ram_gb=gpu_ram_gb,
             cpu_cores=row.get("cpu_cores"),
-            cpu_ram_gb=(cpu_ram_mb / 1024) if cpu_ram_mb else None,
+            cpu_ram_gb=cpu_ram_gb,
             disk_space_gb=_maybe_float(row.get("disk_space")),
             dph_total=_maybe_float(row.get("dph_total")),
             inet_down_mbps=_maybe_float(row.get("inet_down")),

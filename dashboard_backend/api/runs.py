@@ -190,10 +190,15 @@ async def list_offers(
     provisioner: VastProvisioner = Depends(get_provisioner),
     _key: str = Depends(require_api_key),
 ) -> dict[str, Any]:
+    # Vast.ai's search filter expects ``gpu_ram`` in GB (verified empirically:
+    # the CLI returns ``VRAM=81.9`` for 80GB A100s and ``VRAM=41.0`` for 40GB
+    # variants, and ``gpu_ram>=38912`` matches zero offers while
+    # ``gpu_ram>=38`` matches both).  Previously we multiplied by 1024
+    # assuming MB, which silently nuked every search.
     parts = [
         f"gpu_name={gpu_name}",
         f"num_gpus={num_gpus}",
-        f"gpu_ram>={min_vram_gb * 1024}",
+        f"gpu_ram>={min_vram_gb}",
         "rentable=true",
         "verified=true",
     ]
