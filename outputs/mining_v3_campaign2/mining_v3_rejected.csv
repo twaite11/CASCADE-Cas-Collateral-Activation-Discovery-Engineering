@@ -1,0 +1,103 @@
+contig_id,frame,orf_start_nt,orf_length,hepn_pair_count,flags,rejection_reason
+NZ_AP028931.1,0,15408,1021,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP028931.1,0,237675,694,3,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP028931.1,1,319108,625,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP028931.1,1,1216660,691,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP028931.1,2,1012685,1035,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP028931.1,2,1572539,1169,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP028931.1,2,2235593,933,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP028931.1,3,2254915,691,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP028931.1,4,2150184,1148,8,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP028931.1,4,1771329,771,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP028931.1,5,2531300,638,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP028931.1,5,1541330,815,2,MBL_RNASE_Z,hard_signature:MBL_RNASE_Z
+NZ_AP028931.1,5,1533479,986,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP028931.1,5,298310,672,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP043730.1,0,504960,796,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP043730.1,0,957018,1101,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP043730.1,0,1576344,735,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP043730.1,1,401644,835,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP043730.1,2,915752,929,1,LIPOBOX,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP043730.1,2,1272545,696,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP043730.1,2,1650371,911,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP043730.1,2,2216516,893,21,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP043730.1,4,3376082,1059,1,SIGNAL_PEPTIDE|GH3_KHFPGHGD|GH3_CATALYTIC,"hard_signature:GH3_KHFPGHGD,GH3_CATALYTIC"
+NZ_AP043730.1,4,3165701,679,3,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP043730.1,4,1300229,853,6,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP043730.1,4,99698,882,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP043730.1,5,2992417,645,3,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP043730.1,5,1469428,860,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,0,680388,617,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,0,1204794,812,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,0,1916349,664,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,0,2367216,662,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,0,2701521,620,6,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044000.1,1,1112506,869,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,1,1416106,881,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044000.1,1,1905577,620,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,1,3611668,601,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,1,4127803,642,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,1,4133992,821,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,2,452549,675,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,2,2274413,754,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,2,2462636,829,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044000.1,2,3744119,876,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,2,3918923,679,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,2,3972464,1234,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,2,4109960,600,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044000.1,3,4558884,752,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044000.1,3,4301712,735,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,3,4021338,980,3,GH3_KHFPGHGD|GH3_CATALYTIC,"hard_signature:GH3_KHFPGHGD,GH3_CATALYTIC"
+NZ_AP044000.1,3,3986637,1002,3,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044000.1,3,3846891,776,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,3,2761017,609,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,3,2421309,1292,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,3,1859748,640,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,3,300234,884,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044000.1,3,151167,666,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044000.1,4,4526651,636,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,4,3833273,735,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,4,3202967,662,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044000.1,4,908372,1351,12,CAS9_RUVC,hard_signature:CAS9_RUVC
+NZ_AP044000.1,5,1334587,794,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,5,991351,836,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,5,649237,1172,3,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044000.1,5,266254,739,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044000.1,5,166699,714,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,0,1205088,812,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,0,3612438,601,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,1,1112800,869,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,1,1416400,881,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044001.1,1,1905871,620,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,1,2275186,754,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,1,2463409,829,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044001.1,1,3745255,876,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,1,3920059,679,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,1,3973600,1234,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,1,4128898,642,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,1,4135087,821,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,2,453071,675,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,2,680912,617,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,2,1917122,664,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,2,2367989,662,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,2,2702294,620,6,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044001.1,2,4111055,600,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044001.1,3,4525560,636,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,3,4300632,735,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,3,4022433,980,3,GH3_KHFPGHGD|GH3_CATALYTIC,"hard_signature:GH3_KHFPGHGD,GH3_CATALYTIC"
+NZ_AP044001.1,3,1860042,640,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,3,649761,1172,3,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044001.1,3,300234,884,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044001.1,3,151167,666,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044001.1,4,3987773,1002,3,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044001.1,4,3848027,776,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,4,2761790,609,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,4,2422082,1292,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,5,4557793,752,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044001.1,5,3834409,735,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,5,3203737,662,1,,no_reciprocal_hit(>=30%id over 80aa)
+NZ_AP044001.1,5,1334881,794,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,5,991645,836,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,5,908668,1351,12,CAS9_RUVC,hard_signature:CAS9_RUVC
+NZ_AP044001.1,5,266254,739,0,,no_canonical_R-X(4-6)-H_pair
+NZ_AP044001.1,5,166699,714,0,,no_canonical_R-X(4-6)-H_pair

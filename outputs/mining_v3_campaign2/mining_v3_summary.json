@@ -1,0 +1,17 @@
+{
+  "contigs_scanned": 4,
+  "orfs_evaluated": 102,
+  "accepted": 0,
+  "high_confidence": 0,
+  "medium_confidence": 0,
+  "rejection_counts": {
+    "no_reciprocal_hit(>=30%id over 80aa)": 33,
+    "no_canonical_R-X(4-6)-H_pair": 63,
+    "hard_signature:MBL_RNASE_Z": 1,
+    "hard_signature:GH3_KHFPGHGD,GH3_CATALYTIC": 3,
+    "hard_signature:CAS9_RUVC": 2
+  },
+  "min_identity": 0.3,
+  "min_block_len": 80,
+  "skip_reciprocal": false
+}

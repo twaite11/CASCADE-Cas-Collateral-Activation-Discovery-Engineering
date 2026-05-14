@@ -1,0 +1,13 @@
+{
+  "contigs_scanned": 3,
+  "orfs_evaluated": 5,
+  "accepted": 3,
+  "high_confidence": 3,
+  "medium_confidence": 0,
+  "rejection_counts": {
+    "no_canonical_R-X(4-6)-H_pair": 2
+  },
+  "min_identity": 0.3,
+  "min_block_len": 80,
+  "skip_reciprocal": false
+}

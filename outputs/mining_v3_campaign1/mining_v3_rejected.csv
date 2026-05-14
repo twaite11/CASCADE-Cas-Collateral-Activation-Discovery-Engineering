@@ -1,0 +1,3 @@
+contig_id,frame,orf_start_nt,orf_length,hepn_pair_count,flags,rejection_reason
+NZ_JAAROR010000001.1,5,407753,644,0,,no_canonical_R-X(4-6)-H_pair
+NZ_JAAROR010000001.1,5,72470,796,0,,no_canonical_R-X(4-6)-H_pair

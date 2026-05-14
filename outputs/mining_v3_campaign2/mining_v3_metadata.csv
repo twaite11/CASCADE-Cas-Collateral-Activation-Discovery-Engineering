@@ -1,0 +1,1 @@
+sequence_id,contig_id,frame,orf_start_nt,orf_end_nt,orf_length,hepn_pair_count,flags,best_ref_hit,best_ref_identity,best_ref_block_len,has_crispr_array,dr_sequence,dr_distance_bp,dr_n_repeats,confidence

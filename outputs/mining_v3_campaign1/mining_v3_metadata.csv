@@ -1,0 +1,4 @@
+sequence_id,contig_id,frame,orf_start_nt,orf_end_nt,orf_length,hepn_pair_count,flags,best_ref_hit,best_ref_identity,best_ref_block_len,has_crispr_array,dr_sequence,dr_distance_bp,dr_n_repeats,confidence
+NZ_JAAROR010000001.1_ORF_f0_000196425_HIGH,NZ_JAAROR010000001.1,0,196425,199593,1056,9,,LseCas13a_Listeria_seeligeri_TypeVIA_1139aa,0.393,1020,True,GAGUACCUCAAAACAGAAGAGGACUAAA,109,4,HIGH
+NZ_JAARYF010000017.1_ORF_f0_000014313_HIGH,NZ_JAARYF010000017.1,0,14313,17469,1052,9,,LseCas13a_Listeria_seeligeri_TypeVIA_1139aa,0.393,1016,True,GAUUUAGAGUACCUCAAAACAGAAGAGG,103,6,HIGH
+NZ_JAASWF010000012.1_ORF_f0_000018756_HIGH,NZ_JAASWF010000012.1,0,18756,21948,1064,9,,LseCas13a_Listeria_seeligeri_TypeVIA_1139aa,0.39,1028,True,UACCUCAAAACAGAAGAGGACUA,46,6,HIGH
