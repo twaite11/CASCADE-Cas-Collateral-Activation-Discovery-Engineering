@@ -2,7 +2,7 @@
 #
 # One-shot local-dev bootstrap for the CASCADE dashboard on Windows.
 #
-# What it does (idempotent — safe to re-run):
+# What it does (idempotent -- safe to re-run):
 #   1. Installs the `vastai` Python CLI if missing.
 #   2. Asks for your Vast.ai API key once, stores it via `vastai set api-key`
 #      (writes ~/.config/vastai/vast_api_key) AND exports VAST_API_KEY into
@@ -76,19 +76,19 @@ if ($VastApiKey) {
 Write-Step "Configuring CASCADE_API_KEY (dashboard auth)..."
 $env:CASCADE_API_KEY = $CascadeApiKey
 if ($CascadeApiKey -eq "disabled") {
-    Write-Warn "set to 'disabled' — fine for localhost dev; DO NOT use in production"
+    Write-Warn "set to 'disabled' -- fine for localhost dev; DO NOT use in production"
 } else {
     Write-OK "set to a real key"
 }
-Write-Warn "Browser UI must match: open DevTools → localStorage.setItem('cascade_api_key', '$CascadeApiKey')"
+Write-Warn "Browser UI must match: open DevTools and run localStorage.setItem('cascade_api_key', '$CascadeApiKey')"
 
 # 4. SSH key
 Write-Step "Configuring SSH key for Vast.ai..."
+$candidates = @(
+    (Join-Path $env:USERPROFILE ".ssh\id_ed25519"),
+    (Join-Path $env:USERPROFILE ".ssh\id_rsa")
+)
 if (-not $SshKeyPath) {
-    $candidates = @(
-        (Join-Path $env:USERPROFILE ".ssh\id_ed25519"),
-        (Join-Path $env:USERPROFILE ".ssh\id_rsa")
-    )
     foreach ($c in $candidates) { if (Test-Path $c) { $SshKeyPath = $c; break } }
 }
 if ($SshKeyPath -and (Test-Path $SshKeyPath)) {
@@ -96,7 +96,7 @@ if ($SshKeyPath -and (Test-Path $SshKeyPath)) {
     Write-OK "VAST_SSH_KEY_PATH=$SshKeyPath"
     $pub = "$SshKeyPath.pub"
     if (Test-Path $pub) {
-        Write-Warn "Copy this PUBKEY into https://cloud.vast.ai/account/ → SSH keys (one-time):"
+        Write-Warn "Copy this PUBKEY into https://cloud.vast.ai/account/ -> SSH keys (one-time):"
         Get-Content $pub | ForEach-Object { Write-Host "        $_" -ForegroundColor DarkGray }
     }
 } else {
@@ -104,11 +104,18 @@ if ($SshKeyPath -and (Test-Path $SshKeyPath)) {
     $make = Read-Host "Create one now with ssh-keygen? [y/N]"
     if ($make -eq "y") {
         $target = Join-Path $env:USERPROFILE ".ssh\id_ed25519"
+        $sshDir = Split-Path $target -Parent
+        if (-not (Test-Path $sshDir)) { New-Item -ItemType Directory -Path $sshDir -Force | Out-Null }
         ssh-keygen -t ed25519 -f $target -N '""' -C "cascade-vastai"
         $env:VAST_SSH_KEY_PATH = $target
-        Write-OK "Created $target — add the .pub to your Vast.ai account."
+        Write-OK "Created $target -- add the .pub to your Vast.ai account."
+        $pub = "$target.pub"
+        if (Test-Path $pub) {
+            Write-Warn "Copy this PUBKEY into https://cloud.vast.ai/account/ -> SSH keys:"
+            Get-Content $pub | ForEach-Object { Write-Host "        $_" -ForegroundColor DarkGray }
+        }
     } else {
-        Write-Warn "Skipping — you won't be able to launch runs until VAST_SSH_KEY_PATH is set."
+        Write-Warn "Skipping -- you won't be able to launch runs until VAST_SSH_KEY_PATH is set."
     }
 }
 
@@ -116,14 +123,20 @@ if ($SshKeyPath -and (Test-Path $SshKeyPath)) {
 Write-Step "Smoke-testing 'vastai search offers'..."
 $out = & vastai search offers "gpu_name=A100_SXM4 num_gpus=1 rentable=true verified=true" --on-demand --raw --limit 3 -o dph_total 2>&1
 if ($LASTEXITCODE -eq 0) {
-    $n = ($out | ConvertFrom-Json | Measure-Object).Count
-    Write-OK "OK — Vast.ai returned $n offers. Credentials work."
+    try {
+        $parsed = $out | ConvertFrom-Json
+        $n = @($parsed).Count
+        Write-OK "OK -- Vast.ai returned $n offers. Credentials work."
+    } catch {
+        Write-Warn "vastai returned exit 0 but output wasn't JSON. Raw output:"
+        Write-Host $out -ForegroundColor DarkGray
+    }
 } else {
-    Write-Err "FAILED — vastai exited $LASTEXITCODE. Output:"
+    Write-Err "FAILED -- vastai exited $LASTEXITCODE. Output:"
     Write-Host $out -ForegroundColor DarkGray
 }
 
 Write-Host ""
 Write-Host "Done. Now launch the backend in THIS SAME shell so it inherits the env:" -ForegroundColor Cyan
 Write-Host "    uvicorn dashboard_backend.main:app --reload" -ForegroundColor White
-Write-Host "(or whatever your dev launcher is — these env vars are set for the current process only)" -ForegroundColor DarkGray
+Write-Host "(or whatever your dev launcher is -- these env vars are set for the current process only)" -ForegroundColor DarkGray
