@@ -5,6 +5,7 @@ Generation only; we compute Protenix scores downstream. Generates YAML from base
 runs inference, parses CIF output to variant FASTAs.
 """
 import subprocess
+import sys
 import json
 import os
 import glob
@@ -323,10 +324,11 @@ def _run_proteinmpnn_on_cif(cif_path: str, num_seqs: int = 4, temperature: float
             log.warning(f"ProteinMPNN run script not found: {run_script}")
             return ""
 
-        # Step 4: parse output — grab the last chain's sequence (binder)
-        fa_glob = glob.glob(os.path.join(out_dir, "seqs", "*.fa"))
+        # Step 4: parse output — grab the last chain's sequence (binder).
+        # C-13 fix: sorted() so the "last chain" pick is reproducible.
+        fa_glob = sorted(glob.glob(os.path.join(out_dir, "seqs", "*.fa")))
         if not fa_glob:
-            fa_glob = glob.glob(os.path.join(out_dir, "**", "*.fa"), recursive=True)
+            fa_glob = sorted(glob.glob(os.path.join(out_dir, "**", "*.fa"), recursive=True))
         if not fa_glob:
             log.warning("ProteinMPNN produced no output FASTA files under %s", out_dir)
             return ""
@@ -486,8 +488,14 @@ def _run_mpnn_refinement(
         jsonl_path = os.path.join(tmp, "parsed.jsonl")
         parse_script = os.path.join(mpnn_dir, "helper_scripts", "parse_multiple_chains.py")
         try:
+            # C-15 fix: previously used the unqualified "python" which on
+            # systems with multiple interpreters (conda envs, docker
+            # multi-Python images) resolves to whichever interpreter
+            # happens to be first on PATH -- often *not* the same one
+            # running CASCADE.  sys.executable points at exactly the
+            # interpreter that imported this module.
             subprocess.run(
-                ["python", parse_script, "--input_path", input_dir, "--output_path", jsonl_path],
+                [sys.executable, parse_script, "--input_path", input_dir, "--output_path", jsonl_path],
                 capture_output=True, text=True, timeout=120, check=True,
             )
         except Exception as e:
@@ -585,8 +593,9 @@ def _run_mpnn_refinement(
             log.warning(f"MPNN refinement failed: {e}")
             return []
 
-        # Parse output FASTAs — same logic as _run_proteinmpnn_on_cif
-        fa_glob = glob.glob(os.path.join(out_dir, "seqs", "*.fa"))
+        # Parse output FASTAs — same logic as _run_proteinmpnn_on_cif.
+        # C-13: sorted() for reproducibility.
+        fa_glob = sorted(glob.glob(os.path.join(out_dir, "seqs", "*.fa")))
         if not fa_glob:
             return []
 
@@ -863,7 +872,7 @@ def run_pxdesign_generation(
             )
 
         # Cache the best backbone CIF for future refinement generations
-        pred_cifs = glob.glob(os.path.join(abs_out, "**", "predictions", "*.cif"), recursive=True)
+        pred_cifs = sorted(glob.glob(os.path.join(abs_out, "**", "predictions", "*.cif"), recursive=True))
         if pred_cifs:
             import shutil
             shutil.copy2(pred_cifs[0], backbone_cif_cache)
@@ -1017,13 +1026,13 @@ def _parse_pxdesign_outputs(
             f.write(f">{name}\n{full}\n")
         return fasta_path
 
-    sample_csvs = glob.glob(os.path.join(abs_out, "**", "sample_level_output.csv"), recursive=True)
+    sample_csvs = sorted(glob.glob(os.path.join(abs_out, "**", "sample_level_output.csv"), recursive=True))
     design_out = os.path.join(abs_out, "design_outputs")
-    summary_csvs = sample_csvs or glob.glob(os.path.join(design_out, "**", "summary.csv"), recursive=True)
+    summary_csvs = sample_csvs or sorted(glob.glob(os.path.join(design_out, "**", "summary.csv"), recursive=True))
 
     if not summary_csvs:
         log.warning("No sequence CSV found; checking CIF predictions")
-        pred_glob = glob.glob(os.path.join(abs_out, "**", "predictions", "*.cif"), recursive=True)
+        pred_glob = sorted(glob.glob(os.path.join(abs_out, "**", "predictions", "*.cif"), recursive=True))
         if not pred_glob:
             return []
 

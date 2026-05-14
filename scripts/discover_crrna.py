@@ -39,6 +39,15 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# B-21 fix: pull canonical DR length bounds from utils.crispr_constants
+# instead of relying on inline magic numbers like ">= 20" or ">= 23".
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+from utils.crispr_constants import (  # noqa: E402
+    CRISPR_REPEAT_MIN, CRISPR_REPEAT_MAX,
+)
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 METADATA_JSON = PROJECT_ROOT / "metadata" / "variant_domain_metadata.json"
@@ -262,7 +271,13 @@ def _run_minced_on_seq(dna_seq: str, contig_id: str = "query") -> list:
                     repeat_candidate = cols[1]
                 except (ValueError, IndexError):
                     continue
-                if len(repeat_candidate) >= 20 and set(repeat_candidate.upper()) <= {"A", "C", "G", "T"}:
+                # B-21 fix: use CRISPR_REPEAT_MIN (23 nt) from shared
+                # constants instead of the legacy 20-nt floor, which was
+                # accepting tRNA inverted-repeat halves as Cas13 DRs.
+                if (
+                    CRISPR_REPEAT_MIN <= len(repeat_candidate) <= CRISPR_REPEAT_MAX
+                    and set(repeat_candidate.upper()) <= {"A", "C", "G", "T"}
+                ):
                     rna = repeat_candidate.upper().replace("T", "U")
                     drs.append(rna)
 
@@ -552,7 +567,11 @@ def tier4_metagenome_search(contigs_path: str, skip_fold: bool = False) -> dict:
                             try:
                                 pos = int(cols[0])
                                 repeat_seq = cols[1]
-                                if len(repeat_seq) >= 23 and set(repeat_seq.upper()) <= {"A", "C", "G", "T"}:
+                                # B-21: use shared CRISPR_REPEAT_MIN/MAX bounds.
+                                if (
+                                    CRISPR_REPEAT_MIN <= len(repeat_seq) <= CRISPR_REPEAT_MAX
+                                    and set(repeat_seq.upper()) <= {"A", "C", "G", "T"}
+                                ):
                                     rna = repeat_seq.upper().replace("T", "U")
                                     all_arrays.append({
                                         "contig": current_contig,

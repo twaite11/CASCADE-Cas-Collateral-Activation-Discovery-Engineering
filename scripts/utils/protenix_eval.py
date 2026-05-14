@@ -281,36 +281,46 @@ def generate_evaluation_jsons(variant_fasta, baseline_id, metadata_path, out_dir
     return off_json_path, on_json_path
 
 def _find_cached_outputs(pred_dir):
-    """Return (structure_path, summary_path) if both exist under pred_dir, else (None, None)."""
+    """Return (structure_path, summary_path) if both exist under pred_dir, else (None, None).
+
+    C-13 fix: every glob call below is wrapped in sorted() so re-running
+    the same evaluation deterministically picks the same first file --
+    previously the iteration order depended on the underlying filesystem
+    (inode order on ext4, alphabetical on Windows) and could flip between
+    runs of an identical input.
+    """
     if not os.path.isdir(pred_dir):
         return None, None
-    structure_files = glob.glob(os.path.join(pred_dir, "**/*.cif"), recursive=True)
+    structure_files = sorted(glob.glob(os.path.join(pred_dir, "**/*.cif"), recursive=True))
     if not structure_files:
-        structure_files = glob.glob(os.path.join(pred_dir, "**/*.pdb"), recursive=True)
-    summary_files = glob.glob(os.path.join(pred_dir, "**/*_summary*.json"), recursive=True)
+        structure_files = sorted(glob.glob(os.path.join(pred_dir, "**/*.pdb"), recursive=True))
+    summary_files = sorted(glob.glob(os.path.join(pred_dir, "**/*_summary*.json"), recursive=True))
     if not summary_files:
-        summary_files = glob.glob(os.path.join(pred_dir, "*_summary*.json"))
+        summary_files = sorted(glob.glob(os.path.join(pred_dir, "*_summary*.json")))
     if structure_files and summary_files:
         return structure_files[0], summary_files[0]
     return None, None
 
 
 def _find_structure_and_summary(pred_dir):
-    """Locate structure (CIF/PDB) and summary JSON under a prediction directory."""
+    """Locate structure (CIF/PDB) and summary JSON under a prediction directory.
+
+    C-13: deterministic via sorted().
+    """
     if not os.path.isdir(pred_dir):
         return None, None
-    structure_files = glob.glob(os.path.join(pred_dir, "**/*.cif"), recursive=True)
+    structure_files = sorted(glob.glob(os.path.join(pred_dir, "**/*.cif"), recursive=True))
     if not structure_files:
-        structure_files = glob.glob(os.path.join(pred_dir, "*.cif"))
+        structure_files = sorted(glob.glob(os.path.join(pred_dir, "*.cif")))
     if not structure_files:
-        structure_files = glob.glob(os.path.join(pred_dir, "**/*.pdb"), recursive=True)
+        structure_files = sorted(glob.glob(os.path.join(pred_dir, "**/*.pdb"), recursive=True))
     if not structure_files:
-        structure_files = glob.glob(os.path.join(pred_dir, "*.pdb"))
-    summary_files = glob.glob(os.path.join(pred_dir, "**/*_summary*.json"), recursive=True)
+        structure_files = sorted(glob.glob(os.path.join(pred_dir, "*.pdb")))
+    summary_files = sorted(glob.glob(os.path.join(pred_dir, "**/*_summary*.json"), recursive=True))
     if not summary_files:
-        summary_files = glob.glob(os.path.join(pred_dir, "*_summary*.json"))
+        summary_files = sorted(glob.glob(os.path.join(pred_dir, "*_summary*.json")))
     if not summary_files:
-        summary_files = glob.glob(os.path.join(pred_dir, "**/*_confidence*.json"), recursive=True)
+        summary_files = sorted(glob.glob(os.path.join(pred_dir, "**/*_confidence*.json"), recursive=True))
     if structure_files and summary_files:
         return structure_files[0], summary_files[0]
     return None, None
@@ -451,7 +461,24 @@ def run_protenix_inference(json_path, out_dir, model_tier="mini", seqres_db_path
     log.info(f"Starting {engine} {tier_label} inference for {base_name} (this may take several minutes)...")
     log.info(f"  eval_decision: engine={engine} strict_mode={_CATTLE_PROD_STRICT}")
 
-    use_msa = model_tier != "mini"
+    # C-14 fix: previously `use_msa` was hardcoded to `model_tier != "mini"`,
+    # which silently forced --use_msa=true for every base-tier call even when
+    # no seqres DB was available (Protenix then logged warnings but still
+    # consumed minutes of GPU time on a no-op MSA pass).  Now we respect
+    # both the tier hint *and* the operator's override env var
+    # `CASCADE_DISABLE_MSA=1`, and we only enable MSA when a database is
+    # actually reachable.
+    disable_msa = os.environ.get("CASCADE_DISABLE_MSA", "").lower() in {"1", "true", "yes"}
+    db_available = bool(seqres_db_path) and os.path.isdir(seqres_db_path)
+    use_msa = (model_tier != "mini") and (not disable_msa) and db_available
+    if model_tier != "mini" and not use_msa:
+        if disable_msa:
+            log.info(f"  MSA disabled via CASCADE_DISABLE_MSA for {base_name}")
+        elif not db_available:
+            log.info(
+                f"  MSA skipped for {base_name}: seqres_db_path "
+                f"{seqres_db_path!r} not a directory"
+            )
     if use_msa:
         predict_input = _run_msa_step(json_path, out_dir, base_name, seqres_db_path, engine_bin)
     else:

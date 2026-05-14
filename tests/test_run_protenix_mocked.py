@@ -45,7 +45,43 @@ class TestRunProtenixInferenceMocked:
         assert call_args[msa_idx + 1] == "false", "Mini tier should skip MSA"
 
     def test_builds_base_command(self, tmpdir):
-        """Verify base model CLI args."""
+        """Verify base model CLI args.
+
+        C-14: base tier now only enables ``--use_msa true`` when a seqres DB
+        directory is actually present.  We pass tmpdir (which exists) as the
+        DB path to exercise the happy path.
+        """
+        json_path = tmpdir / "test_ON.json"
+        json_path.write_text(json.dumps([{"name": "test_ON", "sequences": []}]))
+        out_dir = tmpdir / "out"
+        out_dir.mkdir()
+        seqres_dir = tmpdir / "seqres_db"
+        seqres_dir.mkdir()
+        pdb_path = str(out_dir / "test_ON" / "model.pdb")
+        summary_path = str(out_dir / "test_ON" / "model_summary.json")
+
+        with patch("utils.protenix_eval.subprocess.run") as mock_run, \
+             patch("utils.protenix_eval._find_cached_outputs", return_value=(None, None)), \
+             patch("utils.protenix_eval._find_structure_and_summary", return_value=(pdb_path, summary_path)), \
+             patch("utils.protenix_eval._run_msa_step", return_value=str(json_path)):
+            mock_run.return_value = MagicMock(returncode=0)
+            struct_path, sum_path = run_protenix_inference(
+                str(json_path), str(out_dir), model_tier="base",
+                seqres_db_path=str(seqres_dir),
+            )
+        assert "model.pdb" in struct_path or "model.cif" in struct_path
+        assert "model_summary.json" in sum_path
+
+        call_args = mock_run.call_args[0][0]
+        assert "protenix_base_default_v1.0.0" in call_args
+        msa_idx = call_args.index("--use_msa")
+        assert call_args[msa_idx + 1] == "true", "Base tier should enable MSA"
+
+    def test_base_command_skips_msa_when_db_missing(self, tmpdir):
+        """C-14 regression: when no seqres DB is available, base tier must
+        fall back to ``--use_msa false`` rather than wasting a Protenix call
+        on a phantom MSA pass.
+        """
         json_path = tmpdir / "test_ON.json"
         json_path.write_text(json.dumps([{"name": "test_ON", "sequences": []}]))
         out_dir = tmpdir / "out"
@@ -58,16 +94,40 @@ class TestRunProtenixInferenceMocked:
              patch("utils.protenix_eval._find_structure_and_summary", return_value=(pdb_path, summary_path)), \
              patch("utils.protenix_eval._run_msa_step", return_value=str(json_path)):
             mock_run.return_value = MagicMock(returncode=0)
-            struct_path, sum_path = run_protenix_inference(
-                str(json_path), str(out_dir), model_tier="base"
+            run_protenix_inference(
+                str(json_path), str(out_dir), model_tier="base",
+                seqres_db_path=None,
             )
-        assert "model.pdb" in struct_path or "model.cif" in struct_path
-        assert "model_summary.json" in sum_path
-
         call_args = mock_run.call_args[0][0]
-        assert "protenix_base_default_v1.0.0" in call_args
         msa_idx = call_args.index("--use_msa")
-        assert call_args[msa_idx + 1] == "true", "Base tier should enable MSA"
+        assert call_args[msa_idx + 1] == "false"
+
+    def test_base_command_respects_disable_env(self, tmpdir, monkeypatch):
+        """C-14 regression: ``CASCADE_DISABLE_MSA=1`` overrides the tier hint
+        even when a DB *is* present.
+        """
+        json_path = tmpdir / "test_ON.json"
+        json_path.write_text(json.dumps([{"name": "test_ON", "sequences": []}]))
+        out_dir = tmpdir / "out"
+        out_dir.mkdir()
+        seqres_dir = tmpdir / "seqres_db"
+        seqres_dir.mkdir()
+        pdb_path = str(out_dir / "test_ON" / "model.pdb")
+        summary_path = str(out_dir / "test_ON" / "model_summary.json")
+        monkeypatch.setenv("CASCADE_DISABLE_MSA", "1")
+
+        with patch("utils.protenix_eval.subprocess.run") as mock_run, \
+             patch("utils.protenix_eval._find_cached_outputs", return_value=(None, None)), \
+             patch("utils.protenix_eval._find_structure_and_summary", return_value=(pdb_path, summary_path)), \
+             patch("utils.protenix_eval._run_msa_step", return_value=str(json_path)):
+            mock_run.return_value = MagicMock(returncode=0)
+            run_protenix_inference(
+                str(json_path), str(out_dir), model_tier="base",
+                seqres_db_path=str(seqres_dir),
+            )
+        call_args = mock_run.call_args[0][0]
+        msa_idx = call_args.index("--use_msa")
+        assert call_args[msa_idx + 1] == "false"
 
     def test_cattle_prod_fallback_when_non_strict(self, tmpdir):
         """If cattle-prod fails and strict mode is off, fallback to protenix."""

@@ -130,4 +130,8 @@ def test_rsync_cli_invocation_includes_endpoint():
     idx = cmd.index("-e")
     ssh_str = cmd[idx + 1]
     assert "-p 22022" in ssh_str
-    assert "StrictHostKeyChecking=no" in ssh_str
+    # C-3 fix: we previously used StrictHostKeyChecking=no + /dev/null known_hosts,
+    # which was vulnerable to MITM on first connection.  Now we pin host keys
+    # trust-on-first-use into ~/.cascade/known_hosts.
+    assert "StrictHostKeyChecking=accept-new" in ssh_str
+    assert "UserKnownHostsFile=" in ssh_str

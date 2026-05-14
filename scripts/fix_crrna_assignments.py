@@ -44,11 +44,26 @@ VALIDATED_IDS = OUTPUT_DIR / "validated_baseline_ids.txt"
 REPORT_CSV = OUTPUT_DIR / "repeat_validation_report.csv"
 CONTIGS_CACHE = OUTPUT_DIR / "contig_cache"
 
-CRISPR_REPEAT_MIN = 23
-CRISPR_REPEAT_MAX = 50
-CRISPR_SPACER_MIN = 15
-CRISPR_SPACER_MAX = 80
-MIN_ARRAY_UNITS = 3
+# B-21 fix: CRISPR repeat/spacer bounds now live in utils.crispr_constants
+# so they can't drift between fix_crrna_assignments.py, discover_crrna.py,
+# and mining_v3.py.  Re-exported under the original module names so any
+# direct imports keep working.
+try:
+    # Standard path when this module is imported as a package member.
+    from utils.crispr_constants import (
+        CRISPR_REPEAT_MIN, CRISPR_REPEAT_MAX,
+        CRISPR_SPACER_MIN, CRISPR_SPACER_MAX,
+        MIN_ARRAY_UNITS,
+    )
+except ImportError:
+    # Fall back when scripts/ isn't on sys.path (e.g., tools running
+    # `python scripts/fix_crrna_assignments.py` directly).
+    sys.path.insert(0, str(SCRIPT_DIR))
+    from utils.crispr_constants import (  # noqa: E402
+        CRISPR_REPEAT_MIN, CRISPR_REPEAT_MAX,
+        CRISPR_SPACER_MIN, CRISPR_SPACER_MAX,
+        MIN_ARRAY_UNITS,
+    )
 
 _DNA_COMP = str.maketrans("ACGT", "TGCA")
 _RNA_COMP = str.maketrans("ACGU", "UGCA")

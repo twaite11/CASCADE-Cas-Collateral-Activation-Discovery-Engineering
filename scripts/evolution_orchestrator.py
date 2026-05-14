@@ -1,5 +1,6 @@
 import csv
 import os
+import sys
 import json
 import multiprocessing
 import random
@@ -11,6 +12,14 @@ import time
 import logging
 import importlib.util
 import numpy as np
+
+# B-12 fix: single source of truth for seeding every RNG that affects
+# CASCADE outputs.  Lives in utils.determinism so the orchestrator,
+# pxdesign wrapper, and one-shot scripts all seed the same way.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+from utils.determinism import resolve_seed, seed_all  # noqa: E402
 
 NUM_WORKERS = int(os.environ.get("CASCADE_WORKERS", "3"))
 
@@ -63,12 +72,14 @@ def _find_mini_summary(eval_dir, variant_name, state_suffix):
     pred_dir = os.path.join(eval_dir, f"{variant_name}_{state_suffix}")
     if not os.path.isdir(pred_dir):
         return None, None
-    summary_files = _glob.glob(os.path.join(pred_dir, "**", "*_summary*.json"), recursive=True)
+    # C-13 fix: glob() order is filesystem-dependent; wrap in sorted()
+    # so re-running picks the same "first" file.
+    summary_files = sorted(_glob.glob(os.path.join(pred_dir, "**", "*_summary*.json"), recursive=True))
     if not summary_files:
-        summary_files = _glob.glob(os.path.join(pred_dir, "**", "*_confidence*.json"), recursive=True)
-    struct_files = _glob.glob(os.path.join(pred_dir, "**", "*.cif"), recursive=True)
+        summary_files = sorted(_glob.glob(os.path.join(pred_dir, "**", "*_confidence*.json"), recursive=True))
+    struct_files = sorted(_glob.glob(os.path.join(pred_dir, "**", "*.cif"), recursive=True))
     if not struct_files:
-        struct_files = _glob.glob(os.path.join(pred_dir, "**", "*.pdb"), recursive=True)
+        struct_files = sorted(_glob.glob(os.path.join(pred_dir, "**", "*.pdb"), recursive=True))
     if struct_files and summary_files:
         return struct_files[0], summary_files[0]
     return None, None
@@ -424,6 +435,19 @@ _REPORT_FIELDS = [
 _report_lock = None
 
 
+class _DummyLock:
+    """No-op context manager for single-worker mode (avoids multiprocessing overhead).
+
+    Hoisted above `append_switch_report` so the C-5 fix can fall back to
+    a no-op when no lock is provided (e.g., single-worker runs).
+    """
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
 def _init_switch_report():
     """Create the CSV header if the report doesn't exist yet."""
     report_path = os.path.join(os.path.dirname(__file__), SWITCH_REPORT_CSV)
@@ -435,12 +459,27 @@ def _init_switch_report():
 
 def append_switch_report(variant_name, lineage_id, generation, off_dist, on_dist,
                          iptm, af2_ig, fitness, n_mutations, filter_passed,
-                         is_elite, score_source, protein_seq=None, subtype="unknown"):
-    """Append one row to the switch report CSV (thread-safe via lock)."""
+                         is_elite, score_source, protein_seq=None, subtype="unknown",
+                         report_lock=None):
+    """Append one row to the switch report CSV.
+
+    C-5 fix: previously two parallel workers could race on the same CSV
+    file; Linux POSIX writes are line-atomic but Windows is not, and
+    even on Linux a write that exceeds the kernel pipe size could be
+    torn.  ``report_lock`` (a ``multiprocessing.Manager().Lock()`` from
+    ``main_evolution_loop``) serialises every append across workers.
+    Single-worker mode uses a ``_DummyLock`` so there's no overhead.
+
+    B-3 / B-14 alignment: the HEPN counter now uses the canonical
+    ``R.{4,6}H`` motif so this report agrees with the parser, the Rust
+    accelerator, and the mining_v3 hit list.
+    """
     n_hepn = ""
     hepn_spacing = ""
     if protein_seq:
-        motif = re.compile(r'R.{3,6}H')
+        # B-3 fix: tightened to the canonical R.{4,6}H so the switch
+        # report's HEPN count matches the rest of the pipeline.
+        motif = re.compile(r'R.{4,6}H')
         matches = list(motif.finditer(protein_seq))
         n_hepn = len(matches)
         pair = _select_hepn_pair(protein_seq, motif)
@@ -456,9 +495,11 @@ def append_switch_report(variant_name, lineage_id, generation, off_dist, on_dist
     ]
 
     report_path = os.path.join(os.path.dirname(__file__), SWITCH_REPORT_CSV)
+    lock_cm = report_lock if report_lock is not None else _DummyLock()
     try:
-        with open(report_path, "a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow(row)
+        with lock_cm:
+            with open(report_path, "a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow(row)
     except OSError:
         pass
 
@@ -579,11 +620,19 @@ def _find_existing_structure(final_dir, name):
     return None
 
 
-def _resolve_best_baseline(best_name, best_fasta, best_hf_pdb, crrna_lookup_id, domain_metadata):
+def _resolve_best_baseline(best_name, best_fasta, best_hf_pdb, crrna_lookup_id,
+                            domain_metadata, gpu_lock=None):
     """
     Resolve the best variant into a usable baseline tuple:
     (baseline_id, pdb_path, fasta_path, crrna_lookup_id).
     Copies files to FINAL_HITS_DIR and returns the new baseline or None on failure.
+
+    C-27 fix: the on-the-fly high-fidelity Protenix call below was the last
+    ``run_protenix_inference`` invocation in the orchestrator that was
+    *not* wrapped in a ``gpu_lock`` block.  In multi-worker mode this let
+    two workers slam the GPU simultaneously, which is exactly the race the
+    lock was introduced to prevent.  Accept (and default) a lock so all
+    inference calls travel through the same serialization point.
     """
     if not best_fasta or not os.path.exists(best_fasta):
         log.warning(f"No FASTA available for {best_name}; cannot resolve as baseline")
@@ -607,9 +656,11 @@ def _resolve_best_baseline(best_name, best_fasta, best_hf_pdb, crrna_lookup_id, 
     on_json = os.path.join(FAST_EVAL_DIR, f"{best_name}_ON.json")
     if os.path.exists(on_json):
         try:
-            hf_structure, _ = run_protenix_inference(
-                on_json, HIGH_FIDELITY_DIR, model_tier="base", seqres_db_path=SEQRES_DB_PATH
-            )
+            lock_cm = gpu_lock if gpu_lock is not None else _DummyLock()
+            with lock_cm:
+                hf_structure, _ = run_protenix_inference(
+                    on_json, HIGH_FIDELITY_DIR, model_tier="base", seqres_db_path=SEQRES_DB_PATH
+                )
             ext = os.path.splitext(hf_structure)[1] or ".pdb"
             hf_dest = os.path.join(FINAL_HITS_DIR, f"{best_name}_ternary_complex{ext}")
             shutil.copy(hf_structure, hf_dest)
@@ -696,11 +747,15 @@ def _evaluate_baseline_reference(baseline_id, baseline_fasta_path, crrna_lookup_
         return None
 
 
-def _run_single_lineage(worker_id, baselines, gpu_lock):
+def _run_single_lineage(worker_id, baselines, gpu_lock, report_lock=None):
     """
     Run one or more lineages end-to-end. Fully self-contained with its own
-    EvolutionGym and output directories. The gpu_lock serializes Protenix
-    inference across parallel workers.
+    EvolutionGym and output directories.
+
+    Args:
+      gpu_lock: serialises Protenix inference across workers (C-27).
+      report_lock: serialises switch_report.csv appends (C-5). Single-worker
+        mode defaults to None which the writer treats as a no-op lock.
 
     baselines: list of (baseline_id, pdb_path, fasta_path, crrna_lookup_id) tuples.
     """
@@ -721,7 +776,10 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
     os.makedirs(hf_dir, exist_ok=True)
     os.makedirs(gen_dir, exist_ok=True)
 
-    mismatch_seqs = generate_mismatch_sequences(TARGET_REGION, mismatch_counts=MISMATCH_COUNTS, num_per_count=3, seed=42)
+    # B-12: pull the global seed instead of hardcoding 42, so --seed and
+    # CASCADE_SEED actually shift the mismatch panel for new runs.
+    _ms_seed = resolve_seed()
+    mismatch_seqs = generate_mismatch_sequences(TARGET_REGION, mismatch_counts=MISMATCH_COUNTS, num_per_count=3, seed=_ms_seed)
 
     global_best = None
     bias_file = None
@@ -955,6 +1013,7 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
                     iptm, af2_ig, fitness, len(mutations_made) if mutations_made else 0,
                     has_potential, is_elite, score_source,
                     protein_seq=variant_protein, subtype=_sub,
+                    report_lock=report_lock,
                 )
 
                 results.append({"name": variant_name, "fasta": variant_fasta, "fitness": fitness,
@@ -989,7 +1048,8 @@ def _run_single_lineage(worker_id, baselines, gpu_lock):
             pop_leader = population[0]
             if global_best is None or pop_leader["fitness"] > global_best[2]:
                 resolved = _resolve_best_baseline(
-                    pop_leader["name"], pop_leader["fasta"], pop_leader["hf_pdb"], crrna_lid, domain_metadata
+                    pop_leader["name"], pop_leader["fasta"], pop_leader["hf_pdb"],
+                    crrna_lid, domain_metadata, gpu_lock=gpu_lock,
                 )
                 if resolved:
                     global_best = (
@@ -1030,6 +1090,8 @@ def _aggregate_worker_results():
     merged_path = RL_TRAINING_DATASET
     os.makedirs(os.path.dirname(merged_path), exist_ok=True)
     import glob as _glob
+    # C-13: already sorted, but the comment is worth keeping -- this
+    # determines the order rows append to the merged dataset.
     worker_files = sorted(_glob.glob(os.path.join(GYM_DIR, "worker_*", "rl_training_dataset.jsonl")))
     if not worker_files:
         return
@@ -1039,14 +1101,6 @@ def _aggregate_worker_results():
                 for line in inp:
                     out.write(line)
     log.info(f"Merged {len(worker_files)} worker RL datasets into {merged_path}")
-
-
-class _DummyLock:
-    """No-op context manager for single-worker mode (avoids multiprocessing overhead)."""
-    def __enter__(self):
-        return self
-    def __exit__(self, *args):
-        pass
 
 
 def main_evolution_loop():
@@ -1121,17 +1175,23 @@ def main_evolution_loop():
     if n_workers <= 1:
         log.info("Running single-worker mode")
         gpu_lock = _DummyLock()
-        _run_single_lineage(0, resolved_baselines, gpu_lock)
+        # C-5: single-worker mode passes None for report_lock so the
+        # writer skips locking; no contention possible.
+        _run_single_lineage(0, resolved_baselines, gpu_lock, report_lock=None)
     else:
         chunks = [resolved_baselines[i::n_workers] for i in range(n_workers)]
         log.info(f"Distributing {len(resolved_baselines)} lineages across {n_workers} workers: "
                  + ", ".join(f"W{i}={len(c)}" for i, c in enumerate(chunks)))
 
-        gpu_lock = multiprocessing.Manager().Lock()
+        # C-5/C-27: one Manager.Lock instance shared across all workers
+        # for GPU serialisation, another for switch_report.csv writes.
+        manager = multiprocessing.Manager()
+        gpu_lock = manager.Lock()
+        report_lock = manager.Lock()
 
         with multiprocessing.Pool(n_workers) as pool:
             pool.starmap(_run_single_lineage, [
-                (i, chunks[i], gpu_lock) for i in range(n_workers)
+                (i, chunks[i], gpu_lock, report_lock) for i in range(n_workers)
             ])
 
         _aggregate_worker_results()
@@ -1180,6 +1240,17 @@ def _parse_args():
         type=int,
         default=int(os.environ.get("CASCADE_WORKERS", str(NUM_WORKERS))),
     )
+    # B-12 fix: every prior orchestrator run drew from unseeded numpy/
+    # torch RNGs, so re-running gen N produced different variants.  The
+    # --seed flag (env-aliased to CASCADE_SEED) deterministically reseeds
+    # the whole process via utils.determinism.seed_all().
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Master RNG seed (random/numpy/torch/cuda). Defaults to "
+             "CASCADE_SEED env or 42 when neither is set.",
+    )
     return parser.parse_args()
 
 
@@ -1196,6 +1267,14 @@ if __name__ == "__main__":
     os.environ["CASCADE_MAX_GENERATIONS"] = str(_args.max_generations)
     os.environ["CASCADE_VARIANTS_PER_GEN"] = str(_args.variants_per_gen)
     os.environ["CASCADE_WORKERS"] = str(_args.workers)
+
+    # B-12: resolve effective seed (CLI > env > default 42) and apply it
+    # to every RNG before any model / RL code runs.  os.environ is also
+    # updated so child subprocess invocations (PXDesign, Protenix) inherit
+    # the same CASCADE_SEED via env.
+    _effective_seed = resolve_seed(_args.seed)
+    os.environ["CASCADE_SEED"] = str(_effective_seed)
+    seed_all(_effective_seed)
 
     # Mutate module globals so the CLI overrides take effect for this process.
     RUN_ID = os.environ["CASCADE_RUN_ID"]
