@@ -19,6 +19,10 @@ def _build_app(tmp_root: Path):
     import os
 
     os.environ["CASCADE_ROOT"] = str(tmp_root)
+    # Phase-2 (C-2) auth: by default the mutating endpoints require an API key.
+    # These tests don't exercise the auth path; opt out explicitly so they
+    # continue to test only the underlying behaviour.
+    os.environ.setdefault("CASCADE_API_KEY", "disabled")
     # Ensure needed dirs exist for load_config()
     (tmp_root / "metadata").mkdir(parents=True, exist_ok=True)
     (tmp_root / "outputs" / "run_logs").mkdir(parents=True, exist_ok=True)

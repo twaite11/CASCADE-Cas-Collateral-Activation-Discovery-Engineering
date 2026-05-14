@@ -18,8 +18,10 @@ package at dev time (tests mock the runner).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
 import shlex
 import shutil
 import subprocess
@@ -30,6 +32,46 @@ from typing import AsyncIterator, Awaitable, Callable
 log = logging.getLogger(__name__)
 
 LogCallback = Callable[[str], Awaitable[None]]
+
+# C-3 fix: stop disabling SSH host-key verification.  By default we keep a
+# trust-on-first-use known_hosts file under ~/.cascade so the *first* time we
+# see a Vast.ai instance we pin its fingerprint, and every subsequent
+# connection refuses to proceed if the key has changed (== MITM).  Operators
+# can override the path via CASCADE_SSH_KNOWN_HOSTS.  Setting it to /dev/null
+# explicitly opts back into the legacy (insecure) behaviour with a logged
+# warning, for one-off local testing.
+DEFAULT_KNOWN_HOSTS = Path.home() / ".cascade" / "known_hosts"
+
+
+def _resolved_known_hosts() -> Path:
+    override = os.environ.get("CASCADE_SSH_KNOWN_HOSTS", "").strip()
+    return Path(override) if override else DEFAULT_KNOWN_HOSTS
+
+
+def _known_hosts_path() -> str:
+    path = _resolved_known_hosts()
+    # Treat /dev/null (Linux) or the Windows equivalent as an explicit opt-out
+    # of host-key pinning.  Warn once when we see it.
+    if str(path) in {"/dev/null", "NUL", "nul"}:
+        if not getattr(_known_hosts_path, "_warned", False):
+            log.warning(
+                "SSH host-key verification disabled (known_hosts=%s). MITM "
+                "protection is OFF; do this only on trusted local networks.",
+                path,
+            )
+            _known_hosts_path._warned = True  # type: ignore[attr-defined]
+        return str(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+    return str(path)
+
+
+# C-6 fix: rsync is run via asyncio.create_subprocess_exec + await
+# proc.communicate() which has no upper bound.  A wedged Vast network would
+# pin the event loop forever.  Operators can override via
+# CASCADE_RSYNC_TIMEOUT (seconds); default 10 minutes is enough for our
+# multi-GB artifacts dir.
+DEFAULT_RSYNC_TIMEOUT_S = float(os.environ.get("CASCADE_RSYNC_TIMEOUT", "600"))
 
 
 @dataclass
@@ -91,14 +133,23 @@ class SshEndpoint:
     key_path: str | None = None
 
     def ssh_args(self) -> list[str]:
-        """Argv fragment suitable for subprocess rsync/ssh calls."""
+        """Argv fragment suitable for subprocess rsync/ssh calls.
+
+        C-3 fix: replaced ``StrictHostKeyChecking=no`` +
+        ``UserKnownHostsFile=/dev/null`` (== "trust everything, remember
+        nothing") with ``StrictHostKeyChecking=accept-new`` against a stable
+        known_hosts file under ``~/.cascade``.  Trust-on-first-use: the first
+        time we see a Vast instance we pin its fingerprint, every subsequent
+        connection refuses to proceed if the key changes.  Operators wanting
+        the legacy behaviour can set ``CASCADE_SSH_KNOWN_HOSTS=/dev/null``.
+        """
         return [
             "-p",
             str(self.port),
             "-o",
-            "StrictHostKeyChecking=no",
+            "StrictHostKeyChecking=accept-new",
             "-o",
-            "UserKnownHostsFile=/dev/null",
+            f"UserKnownHostsFile={_known_hosts_path()}",
             "-o",
             "LogLevel=ERROR",
         ] + (["-i", self.key_path] if self.key_path else [])
@@ -181,7 +232,23 @@ class SshRunner:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_b, stderr_b = await proc.communicate()
+        # C-6 fix: bound the wait so a wedged remote can't pin the event loop.
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(), timeout=DEFAULT_RSYNC_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            # Best-effort cleanup so we don't leak the child process.
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            raise RuntimeError(
+                f"rsync timed out after {DEFAULT_RSYNC_TIMEOUT_S:.0f}s: "
+                f"{src} -> {dest}"
+            )
         if proc.returncode != 0:
             raise RuntimeError(
                 f"rsync failed ({proc.returncode}): {stderr_b.decode(errors='replace')}"

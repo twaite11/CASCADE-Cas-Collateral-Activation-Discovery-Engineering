@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -13,18 +15,47 @@ from .config import load_config
 from .service import DashboardService
 from .storage import SqliteVariantCatalogStore
 
+log = logging.getLogger(__name__)
+
 config = load_config()
 catalog = SqliteVariantCatalogStore(config.sqlite_db_path)
 service = DashboardService(config=config, catalog_store=catalog)
 
 app = FastAPI(title="CASCADE Dashboard API", version="0.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+# C-1 fix: never use the (allow_origins=*, allow_credentials=True) combo --
+# modern browsers reject it outright AND any reverse proxy / edge that strips
+# the wildcard turns this into a drive-by + CSRF surface.  Origins are read
+# from CASCADE_ALLOWED_ORIGINS (comma-separated), defaulting to the two URLs
+# the Vite dev server uses.  Setting CASCADE_ALLOWED_ORIGINS=* explicitly
+# disables credentialed CORS so the upgrade path is clean.
+_origins_env = os.environ.get(
+    "CASCADE_ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173",
+).strip()
+if _origins_env == "*":
+    log.warning(
+        "CASCADE_ALLOWED_ORIGINS=* — credentialed CORS is disabled; only "
+        "anonymous read-only fetches from any origin will succeed."
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["GET", "HEAD", "OPTIONS"],
+        allow_headers=["*"],
+    )
+else:
+    _allowed_origins = [
+        o.strip() for o in _origins_env.split(",") if o.strip()
+    ]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 app.include_router(baselines_api.router)
 app.include_router(runs_api.router)
@@ -120,10 +151,24 @@ def compare_variants(left: str, right: str) -> dict:
 
 @app.get("/api/structure-file")
 def structure_file(path: str) -> FileResponse:
-    full_path = (config.cascade_root / path).resolve()
-    root = config.cascade_root.resolve()
-    if root not in full_path.parents and full_path != root:
+    # C-18 fix: previously used `Path.resolve()` which follows symlinks, then
+    # checked containment by `root not in full_path.parents`.  A symlink
+    # planted under cascade_root could point at `/etc/passwd` and pass the
+    # check because the parents-of-the-target weren't compared.  Use
+    # `os.path.commonpath` after `realpath` for true containment.
+    try:
+        candidate = os.path.realpath(str(config.cascade_root / path))
+    except (OSError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid path")
+    root_real = os.path.realpath(str(config.cascade_root))
+    try:
+        common = os.path.commonpath([candidate, root_real])
+    except ValueError:
+        # Different drives on Windows -> definitely not contained.
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if common != root_real:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    full_path = Path(candidate)
     if not full_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
     if full_path.suffix.lower() not in {".cif", ".pdb"}:

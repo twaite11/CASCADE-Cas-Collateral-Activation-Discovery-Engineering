@@ -246,6 +246,32 @@ class RunsStore:
             conn.close()
         return [_row_to_run(r) for r in rows]
 
+    def count(
+        self,
+        *,
+        statuses: Iterable[RunStatus] | None = None,
+    ) -> int:
+        """Total number of runs matching ``statuses`` (or all when None).
+
+        C-4 fix: the runs API used `total = len(rows)` which only described
+        the current page.  Pagination consumers (RunsPage, OptimizedSidebar)
+        undercounted.  This method returns the real total.
+        """
+        where = ""
+        params: list[Any] = []
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            where = f"WHERE status IN ({placeholders})"
+            params.extend(s.value for s in statuses)
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS n FROM runs {where}", params
+            ).fetchone()
+        finally:
+            conn.close()
+        return int(row["n"] if row else 0)
+
     def active_runs(self) -> list[Run]:
         return self.list(
             statuses=(

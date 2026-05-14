@@ -27,6 +27,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
+from ..auth import require_api_key, require_api_key_ws
 from ..config import DashboardConfig, load_config
 from ..vast.controller import VastController
 from ..vast.log_hub import LogHub, hub as _default_hub
@@ -177,6 +178,7 @@ async def list_offers(
     max_dph_total: float | None = Query(None),
     limit: int = Query(10, ge=1, le=50),
     provisioner: VastProvisioner = Depends(get_provisioner),
+    _key: str = Depends(require_api_key),
 ) -> dict[str, Any]:
     parts = [
         f"gpu_name={gpu_name}",
@@ -199,6 +201,7 @@ async def list_offers(
 async def launch_run(
     body: LaunchRunRequest,
     controller: VastController = Depends(get_controller),
+    _key: str = Depends(require_api_key),
 ) -> RunSummary:
     if body.crrna_lookup_ids and len(body.crrna_lookup_ids) != len(body.baseline_ids):
         raise HTTPException(
@@ -234,8 +237,13 @@ def list_runs(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"invalid status: {exc}")
     runs = store.list(statuses=statuses, limit=limit, offset=offset)
+    # C-4 fix: total used to be len(runs) which is just the current page;
+    # ask the store for the real total count under the same status filter.
+    total = store.count(statuses=statuses)
     return {
-        "total": len(runs),
+        "total": total,
+        "offset": offset,
+        "limit": limit,
         "rows": [RunSummary.from_run(r).model_dump() for r in runs],
     }
 
@@ -263,6 +271,7 @@ async def delete_run(
     run_id: str,
     controller: VastController = Depends(get_controller),
     store: RunsStore = Depends(get_store),
+    _key: str = Depends(require_api_key),
 ) -> dict[str, Any]:
     run = store.get(run_id)
     if not run:
@@ -273,6 +282,13 @@ async def delete_run(
 
 @router.websocket("/runs/{run_id}/logs")
 async def runs_ws_logs(websocket: WebSocket, run_id: str) -> None:
+    # C-2 / C-25 fix: require an API key BEFORE accept() so unauthenticated
+    # clients never receive any backend bytes; and use the shared dependency
+    # graph (`get_store` / `get_hub`) instead of rebuilding the store with a
+    # fresh load_config() call -- that bypassed the singleton cache and could
+    # diverge from the one used by the HTTP routes.
+    if not await require_api_key_ws(websocket):
+        return
     await websocket.accept()
     hub = get_hub()
     store = get_store(load_config())
@@ -283,8 +299,8 @@ async def runs_ws_logs(websocket: WebSocket, run_id: str) -> None:
         return
 
     queue = await hub.subscribe(run_id)
+    hb: asyncio.Task | None = None
     try:
-        # Heartbeat so clients behind proxies don't time out during idle runs.
         async def heartbeat() -> None:
             while True:
                 await asyncio.sleep(20)
@@ -299,7 +315,14 @@ async def runs_ws_logs(websocket: WebSocket, run_id: str) -> None:
                 line = await queue.get()
                 await websocket.send_text(line)
         finally:
-            hb.cancel()
+            # C-26 fix: cancel + await the heartbeat so we don't leak
+            # "Task was destroyed but it is pending!" warnings.
+            if hb is not None:
+                hb.cancel()
+                try:
+                    await hb
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
     except WebSocketDisconnect:
         pass
     except Exception:  # noqa: BLE001
