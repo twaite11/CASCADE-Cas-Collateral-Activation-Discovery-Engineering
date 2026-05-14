@@ -231,8 +231,8 @@ class SshRunner:
         *,
         total_timeout: float = 300.0,
         interval: float = 6.0,
-        stabilize_checks: int = 2,
-        stabilize_gap: float = 5.0,
+        stabilize_checks: int = 3,
+        stabilize_gap: float = 8.0,
     ) -> None:
         """Poll until SSH is reliably up.
 

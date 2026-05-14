@@ -202,6 +202,8 @@ class VastController:
                 started_at=time.time(),
             )
             await emit(f"[controller] ssh up: {inst.ssh_host}:{inst.ssh_port}")
+            await emit("[controller] waiting 15s for container to finish booting...")
+            await asyncio.sleep(15)
 
             endpoint = SshEndpoint(
                 host=inst.ssh_host or "",
@@ -236,7 +238,7 @@ class VastController:
                     except Exception as exc:  # noqa: BLE001
                         last_upload_err = exc
                         if attempt < max_upload_attempts:
-                            delay = 5 * attempt
+                            delay = 10 * attempt
                             await emit(
                                 f"[controller] upload attempt {attempt} failed "
                                 f"({exc}); retrying in {delay}s..."
@@ -277,7 +279,7 @@ class VastController:
                     break
                 except Exception as exc:  # noqa: BLE001
                     if attempt < 3:
-                        delay = 5 * attempt
+                        delay = 10 * attempt
                         await emit(
                             f"[controller] download attempt {attempt} failed "
                             f"({exc}); retrying in {delay}s..."
