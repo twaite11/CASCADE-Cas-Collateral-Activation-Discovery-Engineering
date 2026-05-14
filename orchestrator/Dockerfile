@@ -50,13 +50,17 @@ RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.s
     && rm /tmp/miniconda.sh \
     && ${CONDA_DIR}/bin/conda init bash \
     && ${CONDA_DIR}/bin/conda config --set always_yes yes --set changeps1 no \
+    && ${CONDA_DIR}/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main \
+    && ${CONDA_DIR}/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r \
+    && ${CONDA_DIR}/bin/conda config --add channels conda-forge \
+    && ${CONDA_DIR}/bin/conda config --set channel_priority strict \
     && ${CONDA_DIR}/bin/conda clean -afy
 
 # -----------------------------------------------------------------------------
 # CASCADE env: Protenix 1.0.4 + pipeline requirements
 # -----------------------------------------------------------------------------
 COPY requirements.txt /tmp/requirements.txt
-RUN ${CONDA_DIR}/bin/conda create -n cascade python=3.11 -y -q \
+RUN ${CONDA_DIR}/bin/conda create -n cascade python=3.11 pip -y -q \
     && /opt/conda/envs/cascade/bin/pip install --upgrade pip \
     && /opt/conda/envs/cascade/bin/pip install "protenix>=1.0.4,<2.0" \
     && /opt/conda/envs/cascade/bin/pip install -r /tmp/requirements.txt \
@@ -72,6 +76,7 @@ ARG PXDESIGN_REF=main
 RUN git clone --depth 1 --branch ${PXDESIGN_REF} \
         https://github.com/bytedance/PXDesign.git /opt/PXDesign \
     && cd /opt/PXDesign \
+    && sed -i 's/python=3\.11/python=3.11 pip/g' install.sh \
     && bash -x install.sh --env pxdesign --pkg_manager conda --cuda-version 12.1 \
     && ${CONDA_DIR}/bin/conda clean -afy \
     && rm -rf /root/.cache
