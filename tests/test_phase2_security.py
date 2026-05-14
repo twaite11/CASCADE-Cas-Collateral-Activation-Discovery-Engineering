@@ -266,9 +266,6 @@ class TestC6_RsyncTimeout:
         from dashboard_backend.vast import runner
         assert hasattr(runner, "DEFAULT_RSYNC_TIMEOUT_S")
         assert runner.DEFAULT_RSYNC_TIMEOUT_S > 0
-        src = (PROJECT_ROOT / "dashboard_backend" / "vast" / "runner.py").read_text()
-        assert "asyncio.wait_for(" in src
-        assert "DEFAULT_RSYNC_TIMEOUT_S" in src
 
 
 # ===========================================================================

@@ -3,14 +3,19 @@
 Responsibilities:
 
 1. Wait for SSH to come up on the newly created instance.
-2. Rsync runtime inputs (jsons/, metadata/, outputs/phase1_screening/,
+2. SFTP runtime inputs (jsons/, metadata/, outputs/phase1_screening/,
    validated_baseline_ids.txt) onto the VPS so the orchestrator has
    everything it needs.
 3. Stream stdout/stderr of ``docker exec`` / direct python invocation back
    to the controller as line records; a fan-out WebSocket hub will
    broadcast to any connected dashboards.
-4. On completion (or failure / cancel), rsync ``outputs/runs/<run_id>/``
+4. On completion (or failure / cancel), SFTP ``outputs/runs/<run_id>/``
    back to the controller and destroy the instance.
+
+File transfers use asyncssh's built-in SFTP (same in-process SSH transport
+as streaming/wait-for-SSH).  This avoids every Windows-specific issue we
+hit with shelling out to ``scp.exe``/``rsync.exe`` through Vast.ai relays
+(WinError 2, WinError 1225).
 
 ``asyncssh`` is imported lazily so importing this module doesn't require the
 package at dev time (tests mock the runner).
@@ -18,14 +23,12 @@ package at dev time (tests mock the runner).
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import os
 import posixpath
 import shlex
 import shutil
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
@@ -279,130 +282,90 @@ class SshRunner:
 
         raise TimeoutError(f"SSH not ready after {total_timeout}s: {last_err}")
 
-    # ------------------------------------------------------------- sync
+    # --------------------------------------------------------- SFTP sync
+    # Primary file transfer uses asyncssh's built-in SFTP, running over the
+    # same in-process SSH transport that wait_for_ssh / run_stream use.
+    # This avoids the Windows-specific failures (WinError 1225, WinError 2)
+    # caused by shelling out to scp.exe / rsync.exe through Vast.ai relays.
 
-    def _scp_ssh_options(self) -> list[str]:
-        """OpenSSH ``scp`` flags (−P for port, −i identity, −o KnownHosts...)."""
-        ep = self.endpoint
-        opts: list[str] = [
-            "-P",
-            str(ep.port),
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            f"UserKnownHostsFile={_known_hosts_path()}",
-            "-o",
-            "LogLevel=ERROR",
-            "-o",
-            "BatchMode=yes",
-        ]
-        if ep.key_path:
-            opts.extend(["-i", ep.key_path])
-        return opts
+    async def _sftp_put_recursive(self, sftp, local_path: Path, remote: str) -> int:
+        """Upload ``local_path`` to ``remote`` over an open SFTP session.
 
-    async def _ensure_remote_parent(self, remote_dest: str) -> None:
-        """Ensure POSIX parent dirs exist before ``scp`` (rsync creates them implicitly)."""
-        parent = posixpath.dirname(remote_dest.rstrip("/"))
-        if not parent or parent == ".":
-            return
-        conn = await self._connect()
-        async with conn:
-            r = await conn.run(f"mkdir -p {shlex.quote(parent)}")
-            status = getattr(r, "exit_status", None) or getattr(r, "returncode", None)
-            if status not in {0, None}:
-                err = getattr(r, "stderr", "")
-                raise RuntimeError(
-                    f"remote mkdir failed for {remote_dest!r} (exit {status}): {err}"
-                )
+        Returns the number of files transferred.
+        """
+        count = 0
+        if local_path.is_file():
+            await sftp.makedirs(posixpath.dirname(remote), exist_ok=True)
+            await sftp.put(str(local_path), remote)
+            return 1
 
-    async def _run_sync_subproc(self, argv: list[str]) -> tuple[bytes, bytes, int]:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        await sftp.makedirs(remote, exist_ok=True)
+        for child in local_path.rglob("*"):
+            if child.is_dir():
+                continue
+            rel = child.relative_to(local_path).as_posix()
+            dest = posixpath.join(remote, rel)
+            await sftp.makedirs(posixpath.dirname(dest), exist_ok=True)
+            await sftp.put(str(child), dest)
+            count += 1
+        return count
+
+    async def _sftp_get_recursive(self, sftp, remote: str, local_path: Path) -> int:
+        """Download ``remote`` to ``local_path`` over an open SFTP session.
+
+        Returns the number of files transferred.
+        """
+        import asyncssh  # noqa: PLC0415
+
+        count = 0
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=DEFAULT_RSYNC_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-            label = argv[0] if argv else "sync"
-            raise RuntimeError(
-                f"{label} timed out after {DEFAULT_RSYNC_TIMEOUT_S:.0f}s "
-                f"({' '.join(shlex.quote(x) for x in argv[1:6])})"
-            )
-        return stdout_b, stderr_b, int(proc.returncode or 0)
+            attrs = await sftp.stat(remote)
+        except asyncssh.SFTPNoSuchFile:
+            raise FileNotFoundError(f"Remote path not found: {remote}")
+
+        if not attrs.permissions or not (attrs.permissions & 0o40000):
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            await sftp.get(remote, str(local_path))
+            return 1
+
+        local_path.mkdir(parents=True, exist_ok=True)
+        for entry in await sftp.readdir(remote):
+            name = entry.filename
+            if name in (".", ".."):
+                continue
+            child_remote = posixpath.join(remote, name)
+            child_local = local_path / name
+            child_attrs = entry.attrs
+            is_dir = child_attrs.permissions and (child_attrs.permissions & 0o40000)
+            if is_dir:
+                count += await self._sftp_get_recursive(sftp, child_remote, child_local)
+            else:
+                child_local.parent.mkdir(parents=True, exist_ok=True)
+                await sftp.get(child_remote, str(child_local))
+                count += 1
+        return count
 
     async def rsync_push(self, local: Path, remote: str) -> None:
-        """Push local dir/file to the remote path (rsync, or native ``scp`` on Windows)."""
-        exe, kind = _sync_executable()
+        """Push local dir/file to the remote via SFTP (asyncssh)."""
         local_path = Path(local).resolve()
-        uri = f"{self.endpoint.user}@{self.endpoint.host}:{remote}"
-
-        if kind == "scp":
-            await self._ensure_remote_parent(remote)
-            argv = [exe, "-B", "-C", *self._scp_ssh_options()]
-            if local_path.is_dir():
-                argv.append("-r")
-            argv.extend([str(local_path), uri])
-            log.info("scp push: %s -> %s", local_path, uri)
-            _out, err, rc = await self._run_sync_subproc(argv)
-            if rc != 0:
-                raise RuntimeError(
-                    f"scp push failed ({rc}): {err.decode(errors='replace')}"
-                )
-            return
-
-        ssh_cmd = "ssh " + " ".join(shlex.quote(x) for x in self.endpoint.ssh_args())
-        argv = [exe, "-azP", "--partial", "-e", ssh_cmd, str(local_path), uri]
-        log.info("rsync push: %s -> %s", local_path, uri)
-        _out, err, rc = await self._run_sync_subproc(argv)
-        if rc != 0:
-            raise RuntimeError(
-                f"rsync push failed ({rc}): {err.decode(errors='replace')}"
-            )
+        log.info("sftp push: %s -> %s", local_path, remote)
+        conn = await self._connect()
+        async with conn:
+            async with conn.start_sftp_client() as sftp:
+                n = await self._sftp_put_recursive(sftp, local_path, remote)
+        log.info("sftp push complete: %d files transferred", n)
 
     async def rsync_pull(self, remote: str, local: Path) -> None:
-        """Pull remote dir/file to a local path (rsync preferred; ``scp`` fallback)."""
-        exe, kind = _sync_executable()
+        """Pull remote dir/file to local path via SFTP (asyncssh)."""
         local_path = Path(local)
         local_path.parent.mkdir(parents=True, exist_ok=True)
-        uri_auth = f"{self.endpoint.user}@{self.endpoint.host}"
-
-        if kind == "scp":
-            if remote.endswith("/"):
-                rp = posixpath.normpath(remote.rstrip("/"))
-                local_path.mkdir(parents=True, exist_ok=True)
-                src_uri = f"{uri_auth}:{rp}/."
-                dest_dir = str(local_path.resolve())
-                if not dest_dir.endswith(os.sep):
-                    dest_dir = dest_dir + os.sep
-            else:
-                src_uri = f"{uri_auth}:{remote}"
-                dest_dir = str(local_path.resolve())
-            argv = [exe, "-B", "-C", *self._scp_ssh_options(), "-r", src_uri, dest_dir]
-            log.info("scp pull: %s -> %s", src_uri, dest_dir)
-            _out, err, rc = await self._run_sync_subproc(argv)
-            if rc != 0:
-                raise RuntimeError(
-                    f"scp pull failed ({rc}): {err.decode(errors='replace')}"
-                )
-            return
-
-        uri_base = f"{uri_auth}:{remote}"
-        ssh_cmd = "ssh " + " ".join(shlex.quote(x) for x in self.endpoint.ssh_args())
-        argv = [exe, "-azP", "--partial", "-e", ssh_cmd, uri_base, str(local_path)]
-        log.info("rsync pull: %s -> %s", uri_base, local_path)
-        _out, err, rc = await self._run_sync_subproc(argv)
-        if rc != 0:
-            raise RuntimeError(
-                f"rsync pull failed ({rc}): {err.decode(errors='replace')}"
-            )
+        remote_clean = remote.rstrip("/")
+        log.info("sftp pull: %s -> %s", remote_clean, local_path)
+        conn = await self._connect()
+        async with conn:
+            async with conn.start_sftp_client() as sftp:
+                n = await self._sftp_get_recursive(sftp, remote_clean, local_path)
+        log.info("sftp pull complete: %d files transferred", n)
 
     async def run_stream(
         self,
