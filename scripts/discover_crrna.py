@@ -75,7 +75,59 @@ from utils.pdb_kinematics import extract_protenix_scores
 
 IPTM_THRESHOLD = 0.5
 
-CANDIDATES = {
+def _load_candidates_from_db() -> dict | None:
+    """B-13 fix: load discover-eligible candidates from metadata/cas13_variants.db
+    instead of relying on a frozen hardcoded dict.
+
+    Looks for rows where ``elite=1`` AND a Cas13 subtype is known.  Returns
+    ``None`` when the DB is absent or the schema doesn't expose the columns
+    we need so the caller can fall back to the legacy dict.
+    """
+    db = DB_FILE
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(db))
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(variants)")
+        cols = {row[1] for row in cur.fetchall()}
+        needed = {"sequence_id", "subtype"}
+        if not needed.issubset(cols):
+            conn.close()
+            return None
+        has_elite = "elite" in cols
+        has_qstart = "blastx_qstart" in cols
+        has_qend = "blastx_qend" in cols
+        has_contig = "contig_id" in cols
+        select_cols = ["sequence_id", "subtype"]
+        if has_contig: select_cols.append("contig_id")
+        if has_qstart: select_cols.append("blastx_qstart")
+        if has_qend:   select_cols.append("blastx_qend")
+        sql = f"SELECT {', '.join(select_cols)} FROM variants"
+        if has_elite:
+            sql += " WHERE elite = 1"
+        cur.execute(sql)
+        rows = cur.fetchall()
+        conn.close()
+        if not rows:
+            return None
+        out: dict[str, dict] = {}
+        for row in rows:
+            d = dict(zip(select_cols, row))
+            seq_id = d.pop("sequence_id")
+            out[seq_id] = {
+                "contig": d.get("contig_id", seq_id.split("_")[0]),
+                "subtype": (d.get("subtype") or "").lower() or "cas13a",
+                "blastx_qstart": d.get("blastx_qstart", 0),
+                "blastx_qend": d.get("blastx_qend", 0),
+            }
+        return out or None
+    except sqlite3.Error as e:
+        log.warning(f"Could not load CANDIDATES from {db}: {e}; using legacy dict")
+        return None
+
+
+_LEGACY_CANDIDATES = {
     "3174394687_r3_1090aa_rev": {
         "contig": "3174394687",
         "subtype": "cas13a",
@@ -102,26 +154,59 @@ CANDIDATES = {
     },
 }
 
+CANDIDATES = _load_candidates_from_db() or _LEGACY_CANDIDATES
+
 # ---------------------------------------------------------------------------
-# Known Cas13 DR library (Tier 3) — DNA sequences, converted to RNA at runtime
+# Known Cas13 DR library (Tier 3) — DNA sequences, converted to RNA at runtime.
+#
+# B-15 fix: the previous flat dict mixed Cas13a/b/d/bt DRs and Tier 3 screened
+# every DR against every candidate.  That's biologically wrong: a Cas13a
+# effector binds its native cognate DR fold, not a Cas13b stem-loop.  We now
+# tag each entry with its subtype and Tier 3 only screens DRs matching the
+# candidate's subtype (with a small "near-neighbour" pool for cross-subfamily
+# checks — Cas13bt is a divergent type-VI-B and can be tested against b too).
 # ---------------------------------------------------------------------------
-KNOWN_DR_LIBRARY = {
-    "LshCas13a":  "GATTTAGACTACCCCAAAAACGAAGGGGACTAAAAC",
-    "LbuCas13a":  "GACCACCCCAAAAATGAAGGGGACTAAAAC",
-    "LwaCas13a":  "GATTTAGACTACCCCAAAAACGAAGGGGACTAAAAC",
-    "LseCas13a":  "GATTTAGATTAACCCCTCAAAAGGGACTAAAAT",
-    "HheCas13a":  "GATTTAGACCACCCCAAAAAATGAAGGGGACTAAAAC",
-    "PbuCas13b":  "GTTTTGATAAACCATTAATAAGATTGATTTTAAACC",
-    "BzCas13b":   "GTTTTGATAAACTTAATCAAGTCTATTTGAAACC",
-    "PsmCas13b":  "GTTTTGTTATAAAACGTTTTGAAATTTCC",
-    "Pin2Cas13b": "GTTGTTGAAATCCTCCCTTAGAGGGATTTAAC",
-    "RfxCas13d":  "AACCCCCACCCCGCGGGGGGATTTTTTTAT",
-    "EsCas13d":   "CAACCATATCCCCCTATCGCAGGGATTTTTAT",
-    "AdmCas13d":  "CAACCATACCATTGTATGCAGGGATTTTTTTAT",
-    "UrCas13d":   "AACCCCTACCCCGCGAGGGGGATTTTTTAT",
-    "Cas13bt1":   "GTTTCGAAATTTCATTAAACTTGACC",
-    "Cas13bt3":   "GTTCATTGATATTCGTTACGCTGATTTAAAC",
+KNOWN_DR_LIBRARY: dict[str, dict[str, str]] = {
+    "LshCas13a":  {"dna": "GATTTAGACTACCCCAAAAACGAAGGGGACTAAAAC",  "subtype": "cas13a"},
+    "LbuCas13a":  {"dna": "GACCACCCCAAAAATGAAGGGGACTAAAAC",        "subtype": "cas13a"},
+    "LwaCas13a":  {"dna": "GATTTAGACTACCCCAAAAACGAAGGGGACTAAAAC",  "subtype": "cas13a"},
+    "LseCas13a":  {"dna": "GATTTAGATTAACCCCTCAAAAGGGACTAAAAT",     "subtype": "cas13a"},
+    "HheCas13a":  {"dna": "GATTTAGACCACCCCAAAAAATGAAGGGGACTAAAAC", "subtype": "cas13a"},
+    "PbuCas13b":  {"dna": "GTTTTGATAAACCATTAATAAGATTGATTTTAAACC",  "subtype": "cas13b"},
+    "BzCas13b":   {"dna": "GTTTTGATAAACTTAATCAAGTCTATTTGAAACC",    "subtype": "cas13b"},
+    "PsmCas13b":  {"dna": "GTTTTGTTATAAAACGTTTTGAAATTTCC",         "subtype": "cas13b"},
+    "Pin2Cas13b": {"dna": "GTTGTTGAAATCCTCCCTTAGAGGGATTTAAC",      "subtype": "cas13b"},
+    "RfxCas13d":  {"dna": "AACCCCCACCCCGCGGGGGGATTTTTTTAT",        "subtype": "cas13d"},
+    "EsCas13d":   {"dna": "CAACCATATCCCCCTATCGCAGGGATTTTTAT",      "subtype": "cas13d"},
+    "AdmCas13d":  {"dna": "CAACCATACCATTGTATGCAGGGATTTTTTTAT",     "subtype": "cas13d"},
+    "UrCas13d":   {"dna": "AACCCCTACCCCGCGAGGGGGATTTTTTAT",        "subtype": "cas13d"},
+    "Cas13bt1":   {"dna": "GTTTCGAAATTTCATTAAACTTGACC",             "subtype": "cas13bt"},
+    "Cas13bt3":   {"dna": "GTTCATTGATATTCGTTACGCTGATTTAAAC",       "subtype": "cas13bt"},
 }
+
+# B-15: subtype compatibility map -- when picking DRs for a candidate of
+# subtype X, we screen its own DRs first, then "near-neighbour" subtypes
+# (e.g. Cas13bt is a divergent VI-B variant and may share grammar with b).
+_SUBTYPE_NEIGHBOURS: dict[str, tuple[str, ...]] = {
+    "cas13a":  ("cas13a",),
+    "cas13b":  ("cas13b", "cas13bt"),
+    "cas13bt": ("cas13bt", "cas13b"),
+    "cas13c":  ("cas13c",),
+    "cas13d":  ("cas13d",),
+    "cas13x":  ("cas13x", "cas13bt"),
+}
+
+
+def _drs_for_subtype(subtype: str) -> dict[str, str]:
+    """Return ``{name: dna}`` from KNOWN_DR_LIBRARY matching ``subtype`` or
+    a near-neighbour subfamily.  B-15 -- replaces "iterate the whole dict".
+    """
+    allowed = _SUBTYPE_NEIGHBOURS.get(subtype.lower(), (subtype.lower(),))
+    return {
+        name: entry["dna"]
+        for name, entry in KNOWN_DR_LIBRARY.items()
+        if entry["subtype"] in allowed
+    }
 
 
 # =====================================================================
@@ -499,25 +584,37 @@ def tier2_salvage_mining_repeats(contigs_path: str, skip_fold: bool = False) -> 
 # =====================================================================
 
 def tier3_known_dr_library(skip_fold: bool = False) -> dict:
-    """Tier 3: Screen all known Cas13 DRs against each candidate."""
+    """Tier 3: Screen known Cas13 DRs against each candidate.
+
+    B-15 fix: only screen DRs that are subtype-compatible with the candidate
+    (own subfamily + near-neighbours).  This replaces the previous "every DR
+    vs every candidate" Cartesian product, which both wasted Protenix
+    compute and produced spurious cross-subfamily hits.
+    """
     log.info("=" * 60)
-    log.info("TIER 3: Known Cas13 DR library screen")
-    log.info(f"  Library size: {len(KNOWN_DR_LIBRARY)} DRs x {len(CANDIDATES)} candidates = {len(KNOWN_DR_LIBRARY) * len(CANDIDATES)} combinations")
+    log.info("TIER 3: Known Cas13 DR library screen (subtype-restricted)")
+    total_pairs = sum(len(_drs_for_subtype(info["subtype"])) for info in CANDIDATES.values())
+    log.info(f"  {len(CANDIDATES)} candidates -> {total_pairs} subtype-matched DR screens")
     log.info("=" * 60)
 
     results = {}
     for cid, info in CANDIDATES.items():
         protein_seq = _load_protein_seq(cid)
         subtype = info["subtype"]
+        dr_pool = _drs_for_subtype(subtype)
+        if not dr_pool:
+            log.warning(f"  No DRs in library for subtype {subtype!r} (candidate {cid}); skipping Tier 3")
+            results[cid] = []
+            continue
         scored = []
 
-        for dr_name, dr_dna in KNOWN_DR_LIBRARY.items():
+        for dr_name, dr_dna in dr_pool.items():
             dr_rna = dr_dna.upper().replace("T", "U")
             tag = f"T3_{dr_name}"
             s = score_dr_with_protenix(cid, protein_seq, dr_rna, subtype, tag, skip_fold)
             s["source"] = f"tier3_{dr_name}"
             scored.append(s)
-            log.info(f"  {cid} x {dr_name} ({len(dr_rna)}nt): ipTM={s['iptm']:.3f}")
+            log.info(f"  {cid} ({subtype}) x {dr_name} ({len(dr_rna)}nt): ipTM={s['iptm']:.3f}")
 
         scored.sort(key=lambda x: x["iptm"], reverse=True)
         results[cid] = scored
