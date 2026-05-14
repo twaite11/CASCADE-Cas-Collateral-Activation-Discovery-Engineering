@@ -381,8 +381,29 @@ def save_rl_training_record(
         "offtarget_by_mismatch": offtarget_by_mismatch or {},
         "is_elite": bool(is_elite),
     }
-    with open(dest, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    # C-17 fix: previously this was a plain ``open(dest, "a")`` + ``write``
+    # + implicit close.  In multi-worker mode that produced two failure
+    # modes that the aggregator on line ~1095 would then trip on:
+    #   1. Mid-write SIGKILL / OOM left a half-record dangling without a
+    #      trailing newline, so the next process appended *to the same
+    #      line*, producing concatenated, unparseable JSON.
+    #   2. No fsync meant a controller crash within the OS cache window
+    #      (typically 30 s) silently lost records that the orchestrator
+    #      had already counted as elite.
+    # Build the full line first, write+flush+fsync atomically, and append
+    # only when fsync succeeds.  ``encoding`` and explicit ``newline=""``
+    # keep cross-platform line-ending behaviour deterministic.
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    payload = line.encode("utf-8")
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
+        os.write(fd, payload)
+        try:
+            os.fsync(fd)
+        except OSError:
+            pass
+    finally:
+        os.close(fd)
 
 
 def build_metadata_override_for_evolved(baseline_id, baseline_fasta_path, crrna_lookup_id, domain_metadata):
@@ -1086,21 +1107,45 @@ def _run_single_lineage(worker_id, baselines, gpu_lock, report_lock=None):
 
 
 def _aggregate_worker_results():
-    """Merge per-worker RL training datasets into one file."""
+    """Merge per-worker RL training datasets into one file.
+
+    C-17 fix: defensively skip lines that don't parse as JSON.  Even with
+    atomic writes in save_rl_training_record, a worker killed by the OOM
+    killer mid-encode (or an out-of-disk error) can leave a partial line.
+    We log a warning per dropped line so it's visible in the controller
+    UI rather than silently corrupting the merged dataset.
+    """
     merged_path = RL_TRAINING_DATASET
     os.makedirs(os.path.dirname(merged_path), exist_ok=True)
     import glob as _glob
-    # C-13: already sorted, but the comment is worth keeping -- this
-    # determines the order rows append to the merged dataset.
     worker_files = sorted(_glob.glob(os.path.join(GYM_DIR, "worker_*", "rl_training_dataset.jsonl")))
     if not worker_files:
         return
+    kept = 0
+    dropped = 0
     with open(merged_path, "a", encoding="utf-8") as out:
         for wf in worker_files:
             with open(wf, encoding="utf-8") as inp:
-                for line in inp:
-                    out.write(line)
-    log.info(f"Merged {len(worker_files)} worker RL datasets into {merged_path}")
+                for raw in inp:
+                    line = raw.rstrip("\r\n")
+                    if not line.strip():
+                        continue
+                    try:
+                        json.loads(line)
+                    except json.JSONDecodeError as e:
+                        dropped += 1
+                        log.warning(
+                            "Dropping malformed RL-dataset line from %s "
+                            "(%s); first 80 chars: %r",
+                            wf, e.msg, line[:80],
+                        )
+                        continue
+                    out.write(line + "\n")
+                    kept += 1
+    log.info(
+        "Merged %d worker RL datasets into %s (%d records kept, %d dropped)",
+        len(worker_files), merged_path, kept, dropped,
+    )
 
 
 def main_evolution_loop():

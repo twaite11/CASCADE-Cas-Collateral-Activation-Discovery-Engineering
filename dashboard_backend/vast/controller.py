@@ -57,6 +57,42 @@ class VastController:
         self.promote_fn = promote_fn
 
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # C-23: periodically purge log-hub channels for finished runs so
+        # _channels doesn't grow without bound over the controller's
+        # lifetime.  Kicked off lazily on the first launch() so unit tests
+        # that never await launch() don't have to deal with the task.
+        self._gc_task: asyncio.Task[None] | None = None
+        self._gc_interval_s: float = 300.0
+        self._gc_age_s: float = 600.0
+
+    async def _gc_loop(self) -> None:
+        """C-23: background coroutine that drops closed channels older
+        than ``self._gc_age_s``.  Cancelled cleanly on controller shutdown.
+        """
+        while True:
+            try:
+                await asyncio.sleep(self._gc_interval_s)
+                purged = await self.hub.purge_closed_channels(self._gc_age_s)
+                if purged:
+                    log.info("log_hub GC: purged %d closed channels", purged)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.warning("log_hub GC iteration failed: %s", exc)
+
+    def _ensure_gc_running(self) -> None:
+        if self._gc_task is None or self._gc_task.done():
+            self._gc_task = asyncio.create_task(self._gc_loop(), name="log-hub-gc")
+
+    async def shutdown(self) -> None:
+        """Cancel the GC task; call from FastAPI lifespan teardown."""
+        if self._gc_task and not self._gc_task.done():
+            self._gc_task.cancel()
+            try:
+                await self._gc_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._gc_task = None
 
     # ----------------------------------------------------------- public API
 
@@ -88,6 +124,7 @@ class VastController:
         )
         self.store.create(run)
 
+        self._ensure_gc_running()
         task = asyncio.create_task(self._drive(run), name=f"run-{run_id}")
         self._tasks[run_id] = task
         return run
