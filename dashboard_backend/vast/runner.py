@@ -144,6 +144,7 @@ class RunCommand:
             "export PXDESIGN_CMD=/opt/conda/envs/pxdesign/bin/pxdesign",
             f"mkdir -p {self.container_root}/{self.logs_subdir}",
             f"cd {self.container_root}/scripts",
+            "python -u generate_phase1_structures.py",
             (
                 "python -u evolution_orchestrator.py "
                 f"--run-id {shlex.quote(self.run_id)} "
