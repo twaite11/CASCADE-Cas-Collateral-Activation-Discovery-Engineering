@@ -91,6 +91,7 @@ def get_controller(
         inputs_to_push = [
             config.cascade_root / "metadata",
             config.cascade_root / "jsons",
+            config.cascade_root / "scripts",
             config.cascade_root / "outputs" / "phase1_screening",
             config.cascade_root / "outputs" / "validated_baseline_ids.txt",
         ]
