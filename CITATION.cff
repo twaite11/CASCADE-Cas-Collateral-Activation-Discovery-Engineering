@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use CASCADE, please cite this software."
+type: software
+title: "CASCADE: Cas Collateral Activation — Discovery & Engineering"
+version: "0.1.0"
+date-released: "2026-09-22"
+license: Apache-2.0
+repository-code: "https://github.com/twaite11/CASCADE-Cas-Collateral-Activation-Discovery-Engineering"
+authors:
+  - family-names: Waite
+    given-names: Tyler
+    email: twaite11@wgu.edu
+abstract: >-
+  Oracle-in-the-loop pipeline for strict Cas13-like mining and constrained
+  linker design scored by predicted OFF/ON catalytic geometry.
+# After Zenodo upload, add:
+# identifiers:
+#   - type: doi
+#     value: 10.5281/zenodo.XXXXXXX
+# preferred-citation can point at the JOSS article once published.

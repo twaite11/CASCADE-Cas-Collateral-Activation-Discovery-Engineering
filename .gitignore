@@ -79,3 +79,6 @@ data/hmm/
 # Recoverable raw inputs from re-mining campaigns (large FASTAs/dmnd)
 data/recoverable_inputs/
 
+# Zenodo / packaging builds (upload zip externally; do not commit blobs)
+dist/
+

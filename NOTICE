@@ -1,0 +1,10 @@
+CASCADE (Cas Collateral Activation — Discovery & Engineering)
+Copyright 2026 Tyler Waite
+
+This product includes software developed by Tyler Waite and contributors.
+Licensed under the Apache License, Version 2.0.
+
+Third-party components used at runtime are listed in THIRD_PARTY_NOTICES.md.
+Model weights for Protenix, PXDesign, Cattle-Prod, and ProteinMPNN are NOT
+redistributed with this repository; obtain them from their upstream projects
+under their respective terms.
