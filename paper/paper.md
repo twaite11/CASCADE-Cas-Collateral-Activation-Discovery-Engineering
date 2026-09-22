@@ -1,16 +1,15 @@
 ---
-title: 'CASCADE: oracle-in-the-loop active learning for constrained Cas13 switch design'
+title: 'CASCADE: constrained Cas13 mining and linker design under two-state structural scoring'
 tags:
   - Python
-  - Rust
-  - protein design
   - CRISPR
   - Cas13
+  - protein design
   - structure prediction
-  - active learning
+  - metagenomics
 authors:
   - name: Tyler Waite
-    # orcid: 0000-0000-0000-0000   # uncomment with your ORCID before JOSS submit
+    # orcid: 0000-0000-0000-0000
     affiliation: "1"
 affiliations:
   - name: Independent researcher, San Francisco, CA, USA
@@ -21,115 +20,143 @@ bibliography: paper.bib
 
 # Summary
 
-CASCADE (Cas Collateral Activation — Discovery and Engineering) is open-source
-software for discovering Cas13-like effectors from metagenomic contigs and for
-running a constrained, oracle-in-the-loop sequence search over inter-domain
-linkers. Recognition and catalytic domains are frozen; generative models
-propose only mechanical segments. A hierarchical structure-prediction oracle
-scores unbound (OFF) versus trigger-bound (ON) complexes and near-cognate
-mismatch controls. An online adapter converts relative fitness into a
-ProteinMPNN position-specific scoring matrix for the next generation and
-writes a reward-labeled dataset for optional offline fine-tuning. The
-reference instance uses tumor fusion RNA triggers as an *in silico*
-hypothesis; CASCADE does not claim wet-lab or clinical validation.
+CASCADE is software for finding Cas13-like proteins in assembled contigs and
+for redesigning the **linkers** between their catalytic domains. The RNA-binding
+region and the HEPN active-site sequences stay fixed. Generators
+(PXDesign, ProteinMPNN) only change the mechanical parts. A structure model
+(Protenix or Cattle-Prod) then scores each design twice: without the trigger
+RNA (OFF) and with it (ON), plus simple mismatch controls. Relative scores
+update a bias matrix for the next round of ProteinMPNN. The worked example is
+three *Listeria booriae* Cas13a proteins aimed at tumor fusion RNAs *in
+silico*. Nothing here is wet-lab validated.
 
 # Statement of need
 
-Foundation models for biomolecular structure (@abramson2024af3; @protenix2024)
-and inverse folding (@dauparas2022mpnn) are widely available, but turning them
-into a reliable design loop requires systems engineering: constrained action
-spaces so catalytic sites are not destroyed, multi-state evaluation so
-“foldedness” is not mistaken for switching, cost-aware cascades so expensive
-ternary predictions are reserved for promising candidates, and feedback so
-search improves within a run. Existing CRISPR CAD tools such as ADAPT
-(@metsky2022adapt) and BADGERS (@badgers2024) optimize guide sequences for
-detection. CASCADE addresses a complementary problem: **constrained redesign
-of effector mechanics** under two-state structural scoring, plus a strict
-mining stage that documents rejection reasons when putative Cas13 hits are
-false positives (@cascade_audit2026).
-
-Target users are computational biologists and AI engineers who need a
-reproducible pipeline—not only notebooks—around PXDesign (@pxdesign2025),
-ProteinMPNN, and Protenix-compatible oracles (including the optional Rust
-Cattle-Prod backend).
+Structure models [@abramson2024af3; @protenix2024] and inverse folding
+[@dauparas2022mpnn] are easy to call once, but hard to run as a closed loop
+without wrecking catalysis or chasing fold confidence instead of a real
+switch. Guide-oriented CRISPR tools such as ADAPT [@metsky2022adapt] and
+BADGERS [@badgers2024] optimize detection guides. CASCADE does something
+different: keep the native crRNA pocket, keep the HEPN sequences, and search
+only the inter-domain linkers under OFF/ON/mismatch structural scores. It also
+ships a strict miner that records *why* an ORF was rejected, because early
+loose mining filled catalogs with glycoside hydrolases and other
+non-Cas13 folds [@cascade_audit2026].
 
 # State of the field
 
-Unconstrained protein design stacks (diffusion binders, global MPNN redesign)
-optimize for interface confidence or monomer metrics. CASCADE instead encodes
-an explicit **freeze / evolve / score** policy for multi-domain, ligand-gated
-enzymes. Relative to CRISPR diagnostic design packages, CASCADE does not
-replace guide activity models; it wraps structure oracles and generators to
-search linker sequence space under OFF/ON/mismatch objectives. Relative to
-generic active-learning wrappers, CASCADE ships domain-aware stitching of
-wild-type HEPN segments, Cas13 mining with anti-signature filters, and a
-JSONL flywheel aligned with discrete-diffusion post-training formats
-(@wang2024drakes).
+Most design stacks mutate large fractions of a chain for interface or monomer
+metrics. CASCADE is narrower: a freeze / mutate / score policy for multi-domain
+RNA-gated enzymes, with HEPN stitching after generation and a JSONL log for
+later fine-tuning [@wang2024drakes]. Generators and oracles stay external
+(Apache-2.0 / MIT code; weights downloaded separately).
 
 # Software design
 
-CASCADE separates concerns so mining quality, oracle cost, and search feedback
-can evolve independently:
+![CASCADE loop on a single GPU. Vast.ai and the dashboard are optional.](figures/fig_pipeline.png)
 
-1. **Mining (`mining_v3`)** — canonical HEPN motifs, hard disqualifiers
-   (e.g. GH3, MetH, AAA+), reciprocal homology, CRISPR array–aware direct
-   repeat assignment, and per-ORF rejection logs. Earlier looser mining
-   produced large false-positive catalogs; the strict path is therefore part
-   of the machine-learning story (garbage-in destroys any oracle loop).
-2. **Bootstrap** — annotation into SQLite, HEPN anchoring, optional mini/base
-   structural screens that produce the starting population for evolution.
-3. **Evolution orchestrator** — Gen-0 baseline scoring; Gen-1 PXDesign
-   backbones; Gen-2+ ProteinMPNN on a cached backbone with a scheduled
-   unfreeze of linker positions (10–50\%); HEPN stitch that fails closed with
-   an explicit fitness penalty; hierarchical OFF/ON then ternary/mismatch
-   evaluation via `EVAL_CMD` (Cattle-Prod or Protenix).
-4. **EvolutionGym** — relative advantage versus the Gen-0 baseline (or
-   generation mean), EMA-updated mutation weights, clipped PSSM export into
-   ProteinMPNN (`--pssm_multi`). This is online combinatorial adaptation, not
-   a learned policy-gradient agent; naming it clearly matters for AI-facing
-   readers.
-5. **Optional ops** — FastAPI dashboard and Vast.ai fan-out for parallel
-   hosts. Scientific runs are intended to work from
-   `scripts/evolution_orchestrator.py` and `scripts/smoke_gpu.sh` on a single
-   GPU without cloud orchestration.
+The pipeline has three phases:
 
-Trade-offs: CASCADE reuses frozen foundation models as judges rather than
-training a new generator; fitness coefficients and Ångström gates are
-explicit design thresholds and must not be read as calibrated biophysics;
-topology is still Cas13-shaped (REC–linker–HEPN–linker–HEPN), with a
-documented path toward a declarative switch specification so other
-ligand-gated enzymes can reuse the same freeze/evolve/score contract.
+1. **Mine** (`mining_v3`) — ORF length filter, canonical `R-X(4-6)-H` HEPN
+   pairs, hard anti-signatures, reciprocal alignment to a small Cas13
+   reference set, CRISPR-array–aware direct-repeat assignment, rejection
+   reasons for every drop.
+2. **Bootstrap** — SQLite annotation, HEPN anchors, optional mini/base
+   structure screens, native DR attached as crRNA.
+3. **Evolve** (`evolution_orchestrator.py`) — Gen 0 scores the wild-type
+   enzyme. Gen 1 proposes linker backbones (PXDesign). Later generations
+   inverse-fold a cached backbone with ProteinMPNN while most positions stay
+   frozen; the fraction of free linker sites rises from about 10% to 50%.
+   Wild-type HEPN segments are stitched back before scoring. Cheap OFF/ON
+   predictions gate which designs get expensive ternary and mismatch jobs.
+   `EvolutionGym` turns relative fitness into a ProteinMPNN PSSM (EMA on
+   mutation keys). That is online search guidance, not a trained RL policy.
+
+Science runs from `scripts/evolution_orchestrator.py` or
+`scripts/smoke_gpu.sh`. Cloud fan-out is optional.
+
+# Demonstration: three Cas13a baselines and designed morphs
+
+## The three proteins that survived remine
+
+After quarantining false positives from an earlier miner, strict remine kept
+three *L. booriae* Cas13a ORFs with adjacent CRISPR arrays [@cascade_audit2026]:
+
+| ID (pipeline) | Contig | Length (aa) | Native DR (RNA, truncated) | Best ref (id / aa) |
+|:--------------|:-------|----------:|:---------------------------|:-------------------|
+| `NZ_JAASWF…_HIGH` | NZ_JAASWF010000012.1 | 1052–1064 | `UACCUCAAAACAGAAGAGGACUA…` | LseCas13a ~39% / ~1028 aa |
+| `NZ_JAAROR…_HIGH` | NZ_JAAROR010000001.1 | 1056 | `GAGUACCUCAAAACAGAAGAGGACUAAA…` | LseCas13a ~39% / ~1020 aa |
+| `NZ_JAARYF…_HIGH` | NZ_JAARYF010000017.1 | 1052 | `GAUUUAGAGUACCUCAAAACAGAAGAGG…` | LseCas13a ~39% / ~1016 aa |
+
+Each has nine canonical HEPN motif pairs in the remine report and a Cas13a-like
+36-nt DR family. They are close to known *Listeria* Cas13a (including
+sequences related to patented LbuCas13a) — useful scaffolds, not “Cas13e dark
+matter.” Campaign 2 contigs (*Bacteroides* / *Flavobacterium* /
+*Leptotrichia*) produced **0/102** acceptances under the same filters
+(\autoref{fig:mining}).
+
+![Strict mining_v3 on Campaign 1 (three *L. booriae* contigs) versus Campaign 2 (four non-*Listeria* contigs). Left: ORFs evaluated vs accepted. Right: Campaign 2 rejection reasons.](figures/fig_mining_campaigns.png){#fig:mining}
+
+**Possible uses (hypothesis only).** With a spacer against a tumor fusion
+junction (BCR-ABL1, EWSR1-FLI1, TMPRSS2-ERG, … in `data/fusion_targets.json`),
+these enzymes are starting points for an RNA-triggered collateral RNase that
+should stay quiet without the junction. The same scaffolds can also support
+ordinary Cas13 detection assays if the goal is diagnostics rather than
+cell-restricted activity. Both stories need wet-lab proof.
+
+## Mutation strategy
+
+Domain metadata for the three baselines places HEPN1 at residues 484–594 and
+HEPN2 at 795–905 (1-based). The search therefore concentrates on:
+
+- the pre-HEPN1 stretch (REC + first inter-domain linker), especially the
+  **475–484** window at the HEPN1 border, and
+- **IDL2 (595–794)** between the two HEPNs, where top-quartile designs
+  repeatedly mutated sites around **700–780**.
+
+Catalytic HEPN sequences are never supposed to enter the PSSM; stitch failures
+are penalized. Gen 1 explores backbone geometry; Gen 2+ rethreads sequence on
+a fixed backbone with temperature annealing and bias-weighted unfreeze.
+
+![For the *NZ_JAAROR* lineage: best/median fitness by generation (left) and OFF vs ON HEPN distances for high-ranking morphs (right). Dotted lines mark the software gates OFF ≥ 18 Å and ON ≤ 12 Å.](figures/fig_evolution_JAAROR_lineage.png){#fig:evo}
+
+![Mutation counts among top-quartile fitness variants on the *NZ_JAAROR* baseline. Blue band = IDL2 between HEPN1 and HEPN2.](figures/fig_mutation_hotspots_JAAROR.png){#fig:hot}
+
+## Morphs worth testing next
+
+No design in the archived GPU runs met the strict “elite” cut
+(ipTM ≥ 0.85 and ON ≤ 12 Å). Several morphs on the **JAAROR** lineage still
+stand out for wet-lab triage because they combine a large OFF→ON distance
+shift with the best composite fitness in the run. Lead example
+`L59c434_g02_v28`: fitness ≈ 31.5, OFF ≈ 66 Å, ON ≈ 20 Å, ipTM ≈ 0.34,
+clustered linker substitutions including `475_M … 484_S` and `595_I/596_L`
+(full shortlist in `paper/figures/wetlab_shortlist_JAAROR.csv`). Treat these
+as **computational shortlists**: synthesize, express, and assay collateral
+cleavage on fusion RNA vs mismatched / healthy transcripts before any
+biological claim.
+
+The JAASWF worker run improved OFF/ON separation less and stayed at negative
+fitness — useful as a negative control for the same protocol.
 
 # Research impact statement
 
-The software includes an extensive CPU unit-test suite covering fitness,
-stitching, kinematics payloads, determinism hooks, and dashboard/ops helpers;
-dual-environment setup scripts; Apache-2.0 licensing with explicit third-party
-weight notices; and dual-use documentation stating tumor-restricted RNA
-targeting as an *in silico* research framing only. Frozen mining campaign
-summaries in-repo (`outputs/mining_v3_campaign*`, `docs/REMINE_2026-05-13.md`)
-document recovery of three verified *Listeria booriae* Cas13a effectors and
-rejection of 102/102 Campaign-2 ORFs under strict filters—a reproducible
-negative control. A builder script (`scripts/build_zenodo_bundle.py`) packages
-mining tables and curated GPU artifacts (reward JSONL, bias matrices,
-optimized FASTA, Phase-1 confidence summaries) for Zenodo deposit; the DOI
-should be linked in `CITATION.cff` after upload. Together these materials
-support JOSS-style review: installable code, tests, example baselines, and
-archived results separate from foundation-model weights.
+CASCADE ships CPU tests, setup scripts, Apache-2.0 licensing with third-party
+weight notices, dual-use notes, and frozen mining tables in-repo. GPU
+campaign artifacts (JSONL, bias matrices, shortlists) are packaged by
+`scripts/build_zenodo_bundle.py` and attached to the `v0.1.0` GitHub release.
+Figures above are generated from those runs via
+`scripts/build_paper_figures.py`.
 
 # AI usage disclosure
 
-Generative AI coding assistants (including Cursor) were used to help draft
-documentation, packaging scripts, and this manuscript text. Pipeline logic,
-thresholds, and scientific claims were reviewed and edited by the author.
-CPU tests and mining audits described in the repository documentation were
-used to check correctness of software behavior. No generative model was used
-as an unsupervised substitute for experimental validation.
+Coding assistants helped with packaging and an earlier draft of this paper.
+This revision is rewritten around the mining remine and the JAAROR/JAASWF
+evolution logs. Claims were checked against those files. Assistants were not
+used as a stand-in for experiments.
 
 # Acknowledgements
 
-CASCADE builds on open Protenix, PXDesign, ProteinMPNN, and related
-ecosystem tools. No specific funding grant is claimed for this software
-release.
+Built on Protenix, PXDesign, ProteinMPNN, and related open tools. No grant
+funding is claimed for this release.
 
 # References

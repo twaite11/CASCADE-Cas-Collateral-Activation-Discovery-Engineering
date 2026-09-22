@@ -1,5 +1,16 @@
 # Building the JOSS draft PDF
 
+## Figures
+
+Regenerate plots from local mining + RL outputs:
+
+```bash
+python scripts/build_paper_figures.py
+```
+
+Outputs land in `paper/figures/` (PNG plots + optional SVGs copied from
+`Desktop/patent_figures` when present). Edit `paper/paper.md` captions as needed.
+
 ## GitHub Action
 
 A workflow under `.github/workflows/joss-draft.yml` compiles `paper/paper.md`
@@ -15,17 +26,10 @@ docker run --rm \
   openjournals/inara
 ```
 
-On Windows (PowerShell), mount the absolute `paper` path and omit `--user` if
-needed.
-
 ## Before submission checklist
 
-- [ ] Add ORCID to `paper/paper.md` author metadata
-- [ ] Confirm affiliation wording
-- [ ] Upload Zenodo bundle; paste DOI into `paper.bib` (`cascade_audit2026`),
-      `CITATION.cff`, and optionally the paper text
-- [ ] Fix any `orcid: # ADD...` placeholder (YAML must be valid — remove the
-      comment line or set a real ORCID)
-- [ ] Open a JOSS pre-submission inquiry / submit at https://joss.theoj.org/
-- [ ] Ensure the GitHub repo is public with Apache-2.0 `LICENSE`
-- [ ] Point reviewers at `README.md`, `scripts/smoke_gpu.sh`, and `pytest tests/`
+- [ ] Add ORCID in `paper/paper.md`
+- [ ] Confirm affiliation
+- [ ] Paste Zenodo DOI into `CITATION.cff` / `paper.bib` when available
+- [ ] Skim figures: only the three *L. booriae* Cas13a are claimed as verified
+- [ ] Submit at https://joss.theoj.org/

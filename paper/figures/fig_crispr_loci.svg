@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 720" width="1100" height="720" font-family="Arial, Helvetica, sans-serif">
+  <title>Figure 1 — Native CRISPR Loci Architecture of Novel Cas13 Effectors</title>
+
+  <defs>
+    <marker id="arrowRight" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#333"/>
+    </marker>
+    <marker id="arrowDown" markerWidth="6" markerHeight="8" refX="3" refY="8" orient="auto">
+      <path d="M0,0 L6,0 L3,8 Z" fill="#333"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="550" y="32" text-anchor="middle" font-size="16" font-weight="bold" fill="#111">Figure 1. Native CRISPR Loci Architecture of Novel Cas13 Effector Proteins</text>
+
+  <!-- Legend -->
+  <g transform="translate(60, 52)">
+    <!-- Gene arrow -->
+    <polygon points="0,4 55,4 65,12 55,20 0,20" fill="#888" stroke="#333" stroke-width="1.2"/>
+    <text x="72" y="16" font-size="10" fill="#333">Cas13 gene</text>
+    <!-- DR diamond -->
+    <polygon points="155,12 163,4 171,12 163,20" fill="#555" stroke="#333" stroke-width="1"/>
+    <text x="178" y="16" font-size="10" fill="#333">Direct Repeat (DR)</text>
+    <!-- Spacer rect -->
+    <rect x="290" y="5" width="18" height="14" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <text x="314" y="16" font-size="10" fill="#333">Spacer</text>
+    <!-- Intergenic line -->
+    <line x1="375" y1="12" x2="425" y2="12" stroke="#333" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <text x="432" y="16" font-size="10" fill="#333">Intergenic region (not to scale)</text>
+  </g>
+
+  <!-- ========== TRACK 1: Listeria booriae ========== -->
+  <g transform="translate(0, 100)">
+    <!-- Label -->
+    <text x="60" y="18" font-size="13" font-weight="bold" fill="#111">Track 1</text>
+    <text x="60" y="35" font-size="11" fill="#333" font-style="italic">Listeria booriae</text>
+    <text x="60" y="50" font-size="10" fill="#555">SEQ ID NO: 1 — Cas13a (1064 aa)</text>
+
+    <!-- Cas13 gene arrow -->
+    <polygon points="230,15 430,15 445,30 430,45 230,45" fill="#888" stroke="#333" stroke-width="1.5"/>
+    <text x="335" y="35" text-anchor="middle" font-size="11" font-weight="bold" fill="#fff">cas13a</text>
+    <text x="335" y="55" text-anchor="middle" font-size="9" fill="#555">1064 aa</text>
+
+    <!-- Intergenic: 45 bp — very short, solid line -->
+    <line x1="445" y1="30" x2="475" y2="30" stroke="#333" stroke-width="1.5"/>
+    <text x="460" y="22" text-anchor="middle" font-size="9" fill="#333">~45 bp</text>
+
+    <!-- CRISPR Array bracket -->
+    <line x1="475" y1="10" x2="475" y2="50" stroke="#999" stroke-width="0.8"/>
+    <text x="570" y="65" text-anchor="middle" font-size="9" fill="#555">CRISPR Array</text>
+
+    <!-- DR-Spacer-DR-Spacer-DR pattern -->
+    <polygon points="480,30 488,20 496,30 488,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="500" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="520,30 528,20 536,30 528,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="540" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="560,30 568,20 576,30 568,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="580" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="600,30 608,20 616,30 608,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="620" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="640,30 648,20 656,30 648,40" fill="#555" stroke="#333" stroke-width="1"/>
+
+    <!-- DR label -->
+    <text x="488" y="9" text-anchor="middle" font-size="8" fill="#555">DR (26 nt)</text>
+
+    <!-- Divider -->
+    <line x1="60" y1="75" x2="1040" y2="75" stroke="#ddd" stroke-width="0.8"/>
+  </g>
+
+  <!-- ========== TRACK 2: Bacteroides pyogenes ========== -->
+  <g transform="translate(0, 210)">
+    <text x="60" y="18" font-size="13" font-weight="bold" fill="#111">Track 2</text>
+    <text x="60" y="35" font-size="11" fill="#333" font-style="italic">Bacteroides pyogenes</text>
+    <text x="60" y="50" font-size="10" fill="#555">SEQ ID NO: 4 — Cas13a (1059 aa)</text>
+
+    <!-- Cas13 gene arrow -->
+    <polygon points="230,15 428,15 443,30 428,45 230,45" fill="#888" stroke="#333" stroke-width="1.5"/>
+    <text x="334" y="35" text-anchor="middle" font-size="11" font-weight="bold" fill="#fff">cas13a</text>
+    <text x="334" y="55" text-anchor="middle" font-size="9" fill="#555">1059 aa</text>
+
+    <!-- Intergenic: 2,825 bp — dashed line, medium -->
+    <line x1="443" y1="30" x2="540" y2="30" stroke="#333" stroke-width="1.5" stroke-dasharray="6,4"/>
+    <text x="491" y="22" text-anchor="middle" font-size="9" fill="#333">2,825 bp</text>
+    <text x="491" y="14" text-anchor="middle" font-size="8" fill="#999">///</text>
+
+    <!-- CRISPR Array: 3 repeats -->
+    <line x1="540" y1="10" x2="540" y2="50" stroke="#999" stroke-width="0.8"/>
+    <text x="597" y="65" text-anchor="middle" font-size="9" fill="#555">CRISPR Array (3 repeats)</text>
+
+    <polygon points="545,30 553,20 561,30 553,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="565" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="585,30 593,20 601,30 593,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="605" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="625,30 633,20 641,30 633,40" fill="#555" stroke="#333" stroke-width="1"/>
+
+    <text x="553" y="9" text-anchor="middle" font-size="8" fill="#555">DR (28 nt)</text>
+
+    <line x1="60" y1="75" x2="1040" y2="75" stroke="#ddd" stroke-width="0.8"/>
+  </g>
+
+  <!-- ========== TRACK 3: Flavobacterium sp. Cas13a/d 980 aa ========== -->
+  <g transform="translate(0, 320)">
+    <text x="60" y="18" font-size="13" font-weight="bold" fill="#111">Track 3</text>
+    <text x="60" y="35" font-size="11" fill="#333" font-style="italic">Flavobacterium sp. KY-23415</text>
+    <text x="60" y="50" font-size="10" fill="#555">SEQ ID NO: 5 — Cas13a/d (980 aa)</text>
+
+    <!-- Cas13 gene arrow -->
+    <polygon points="230,15 414,15 429,30 414,45 230,45" fill="#888" stroke="#333" stroke-width="1.5"/>
+    <text x="327" y="35" text-anchor="middle" font-size="11" font-weight="bold" fill="#fff">cas13a/d</text>
+    <text x="327" y="55" text-anchor="middle" font-size="9" fill="#555">980 aa</text>
+
+    <!-- Intergenic: 6,455 bp — longer dashed -->
+    <line x1="429" y1="30" x2="580" y2="30" stroke="#333" stroke-width="1.5" stroke-dasharray="6,4"/>
+    <text x="504" y="22" text-anchor="middle" font-size="9" fill="#333">6,455 bp</text>
+    <text x="480" y="14" text-anchor="middle" font-size="8" fill="#999">///</text>
+    <text x="530" y="14" text-anchor="middle" font-size="8" fill="#999">///</text>
+
+    <!-- CRISPR Array: 6 repeats -->
+    <line x1="580" y1="10" x2="580" y2="50" stroke="#999" stroke-width="0.8"/>
+    <text x="667" y="65" text-anchor="middle" font-size="9" fill="#555">CRISPR Array (6 repeats)</text>
+
+    <polygon points="585,30 593,20 601,30 593,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="605" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="625,30 633,20 641,30 633,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="645" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="665,30 673,20 681,30 673,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="685" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="705,30 713,20 721,30 713,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="725" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="745,30 753,20 761,30 753,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="765" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="785,30 793,20 801,30 793,40" fill="#555" stroke="#333" stroke-width="1"/>
+
+    <text x="593" y="9" text-anchor="middle" font-size="8" fill="#555">DR (28 nt)</text>
+
+    <line x1="60" y1="75" x2="1040" y2="75" stroke="#ddd" stroke-width="0.8"/>
+  </g>
+
+  <!-- ========== TRACK 4: Flavobacterium sp. Cas13d 884 aa ========== -->
+  <g transform="translate(0, 430)">
+    <text x="60" y="18" font-size="13" font-weight="bold" fill="#111">Track 4</text>
+    <text x="60" y="35" font-size="11" fill="#333" font-style="italic">Flavobacterium sp. KY-23415</text>
+    <text x="60" y="50" font-size="10" fill="#555">SEQ ID NO: 6 — Cas13d (884 aa)</text>
+
+    <!-- Cas13 gene arrow -->
+    <polygon points="230,15 396,15 411,30 396,45 230,45" fill="#666" stroke="#333" stroke-width="1.5"/>
+    <text x="318" y="35" text-anchor="middle" font-size="11" font-weight="bold" fill="#fff">cas13d</text>
+    <text x="318" y="55" text-anchor="middle" font-size="9" fill="#555">884 aa</text>
+
+    <!-- Intergenic: 124 bp — short solid line, highlighted -->
+    <line x1="411" y1="30" x2="441" y2="30" stroke="#333" stroke-width="2"/>
+    <text x="426" y="22" text-anchor="middle" font-size="9" font-weight="bold" fill="#111">124 bp</text>
+
+    <!-- Strongest-association callout -->
+    <rect x="395" y="58" width="186" height="16" rx="3" fill="none" stroke="#333" stroke-width="1" stroke-dasharray="3,2"/>
+    <text x="488" y="69" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">Strongest native Cas13–array association</text>
+
+    <!-- CRISPR Array: 4 repeats -->
+    <line x1="441" y1="10" x2="441" y2="50" stroke="#999" stroke-width="0.8"/>
+
+    <polygon points="446,30 454,20 462,30 454,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="466" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="486,30 494,20 502,30 494,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="506" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="526,30 534,20 542,30 534,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="546" y="22" width="16" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="566,30 574,20 582,30 574,40" fill="#555" stroke="#333" stroke-width="1"/>
+
+    <text x="454" y="9" text-anchor="middle" font-size="8" fill="#555">DR (28 nt)</text>
+    <text x="540" y="48" font-size="9" fill="#555">CRISPR Array (4 repeats)</text>
+
+    <line x1="60" y1="85" x2="1040" y2="85" stroke="#ddd" stroke-width="0.8"/>
+  </g>
+
+  <!-- ========== TRACK 5: Leptotrichia sp. SK-5 ========== -->
+  <g transform="translate(0, 550)">
+    <text x="60" y="18" font-size="13" font-weight="bold" fill="#111">Track 5</text>
+    <text x="60" y="35" font-size="11" fill="#333" font-style="italic">Leptotrichia sp. SK-5</text>
+    <text x="60" y="50" font-size="10" fill="#555">SEQ ID NO: 7 — Cas13a (1169 aa)</text>
+
+    <!-- Cas13 gene arrow -->
+    <polygon points="230,15 450,15 465,30 450,45 230,45" fill="#888" stroke="#333" stroke-width="1.5"/>
+    <text x="345" y="35" text-anchor="middle" font-size="11" font-weight="bold" fill="#fff">cas13a</text>
+    <text x="345" y="55" text-anchor="middle" font-size="9" fill="#555">1169 aa</text>
+
+    <!-- Intergenic: 9,292 bp — longest dashed -->
+    <line x1="465" y1="30" x2="660" y2="30" stroke="#333" stroke-width="1.5" stroke-dasharray="6,4"/>
+    <text x="562" y="22" text-anchor="middle" font-size="9" fill="#333">9,292 bp</text>
+    <text x="520" y="14" text-anchor="middle" font-size="8" fill="#999">///</text>
+    <text x="562" y="14" text-anchor="middle" font-size="8" fill="#999">///</text>
+    <text x="604" y="14" text-anchor="middle" font-size="8" fill="#999">///</text>
+
+    <!-- CRISPR Array: 11 repeats -->
+    <line x1="660" y1="10" x2="660" y2="50" stroke="#999" stroke-width="0.8"/>
+    <text x="790" y="65" text-anchor="middle" font-size="9" fill="#555">CRISPR Array (11 repeats)</text>
+
+    <polygon points="665,30 673,20 681,30 673,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="685" y="22" width="14" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="703,30 710,20 717,30 710,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="721" y="22" width="14" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="739,30 746,20 753,30 746,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="757" y="22" width="14" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="775,30 782,20 789,30 782,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="793" y="22" width="14" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="811,30 818,20 825,30 818,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="829" y="22" width="14" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="847,30 854,20 861,30 854,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="865" y="22" width="14" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="883,30 890,20 897,30 890,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="901" y="22" width="14" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="919,30 926,20 933,30 926,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="937" y="22" width="14" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="955,30 962,20 969,30 962,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="973" y="22" width="14" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="991,30 998,20 1005,30 998,40" fill="#555" stroke="#333" stroke-width="1"/>
+    <rect x="1009" y="22" width="14" height="16" fill="#ccc" stroke="#333" stroke-width="1"/>
+    <polygon points="1027,30 1034,20 1041,30 1034,40" fill="#555" stroke="#333" stroke-width="1"/>
+
+    <text x="673" y="9" text-anchor="middle" font-size="8" fill="#555">DR (22 nt)</text>
+  </g>
+
+  <!-- Figure caption -->
+  <text x="550" y="700" text-anchor="middle" font-size="10" fill="#555">Genomic organization of novel Cas13 loci from four independent genera. Intergenic distances are not drawn to scale.</text>
+  <text x="550" y="714" text-anchor="middle" font-size="10" fill="#555">DR = Direct Repeat. Gene arrows indicate transcription directionality. Distances verified from NCBI RefSeq assemblies (April 2026).</text>
+
+</svg>

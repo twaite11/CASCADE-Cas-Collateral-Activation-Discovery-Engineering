@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 380" width="1000" height="380" font-family="Arial, Helvetica, sans-serif">
+  <title>Figure 2 — HEPN Domain Architecture of Novel Cas13d Protein (SEQ ID NO: 6)</title>
+
+  <defs>
+    <marker id="bracketArrow" markerWidth="6" markerHeight="6" refX="3" refY="6" orient="auto">
+      <path d="M0,0 L3,6 L6,0" fill="none" stroke="#333" stroke-width="1"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="500" y="28" text-anchor="middle" font-size="15" font-weight="bold" fill="#111">Figure 2. HEPN Domain Architecture of Novel Cas13d Protein</text>
+  <text x="500" y="48" text-anchor="middle" font-size="11" fill="#555">SEQ ID NO: 6 — Flavobacterium sp. KY-23415 (884 amino acids)</text>
+
+  <!-- === Main protein bar === -->
+  <!-- Full bar outline -->
+  <rect x="80" y="140" width="840" height="50" rx="4" fill="none" stroke="#333" stroke-width="2"/>
+
+  <!-- NTD region: aa 1-58 (proportional: 58/884 * 840 = ~55 px) -->
+  <rect x="80" y="140" width="55" height="50" rx="4" fill="#e0e0e0" stroke="#333" stroke-width="1.5"/>
+  <text x="107" y="170" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">NTD</text>
+
+  <!-- HEPN1 domain: centered around pos 59, span ~80aa (approx 76px) -->
+  <rect x="135" y="140" width="76" height="50" fill="#666" stroke="#333" stroke-width="1.5"/>
+  <text x="173" y="163" text-anchor="middle" font-size="11" font-weight="bold" fill="#fff">HEPN1</text>
+  <text x="173" y="178" text-anchor="middle" font-size="9" fill="#ddd">Domain</text>
+
+  <!-- Linker region: spans from ~aa 139 to ~aa 349 (~210aa = ~200px) -->
+  <rect x="211" y="140" width="200" height="50" fill="#f0f0f0" stroke="#333" stroke-width="1.5"/>
+  <text x="311" y="163" text-anchor="middle" font-size="10" fill="#666">Inter-domain</text>
+  <text x="311" y="178" text-anchor="middle" font-size="10" fill="#666">Linker Region</text>
+
+  <!-- HEPN2 domain: centered around pos 389, span ~80aa -->
+  <rect x="411" y="140" width="76" height="50" fill="#666" stroke="#333" stroke-width="1.5"/>
+  <text x="449" y="163" text-anchor="middle" font-size="11" font-weight="bold" fill="#fff">HEPN2</text>
+  <text x="449" y="178" text-anchor="middle" font-size="9" fill="#ddd">Domain</text>
+
+  <!-- Helical/CTD region: aa ~469 to 884 -->
+  <rect x="487" y="140" width="433" height="50" rx="4" fill="#d0d0d0" stroke="#333" stroke-width="1.5"/>
+  <text x="703" y="163" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">C-terminal Domain (CTD)</text>
+  <text x="703" y="178" text-anchor="middle" font-size="10" fill="#555">Helical / RNA-binding</text>
+
+  <!-- N-term / C-term labels -->
+  <text x="75" y="170" text-anchor="end" font-size="12" font-weight="bold" fill="#333">N</text>
+  <text x="925" y="170" text-anchor="start" font-size="12" font-weight="bold" fill="#333">C</text>
+
+  <!-- === HEPN1 Catalytic Motif Callout (above) === -->
+  <g>
+    <!-- Bracket lines pointing to HEPN1 -->
+    <line x1="148" y1="130" x2="148" y2="110" stroke="#333" stroke-width="1.2"/>
+    <line x1="198" y1="130" x2="198" y2="110" stroke="#333" stroke-width="1.2"/>
+    <line x1="148" y1="110" x2="198" y2="110" stroke="#333" stroke-width="1.2"/>
+    <line x1="173" y1="110" x2="173" y2="95" stroke="#333" stroke-width="1.2"/>
+
+    <!-- Motif box -->
+    <rect x="113" y="70" width="120" height="24" rx="3" fill="#fff" stroke="#333" stroke-width="1.2"/>
+    <text x="173" y="86" text-anchor="middle" font-size="10" font-weight="bold" fill="#111">R-X(3-8)-H</text>
+
+    <!-- Specific sequence -->
+    <text x="173" y="65" text-anchor="middle" font-size="9" fill="#555">RNGEYH @ pos 59</text>
+  </g>
+
+  <!-- === HEPN2 Catalytic Motif Callout (above) === -->
+  <g>
+    <line x1="424" y1="130" x2="424" y2="110" stroke="#333" stroke-width="1.2"/>
+    <line x1="474" y1="130" x2="474" y2="110" stroke="#333" stroke-width="1.2"/>
+    <line x1="424" y1="110" x2="474" y2="110" stroke="#333" stroke-width="1.2"/>
+    <line x1="449" y1="110" x2="449" y2="95" stroke="#333" stroke-width="1.2"/>
+
+    <rect x="389" y="70" width="120" height="24" rx="3" fill="#fff" stroke="#333" stroke-width="1.2"/>
+    <text x="449" y="86" text-anchor="middle" font-size="10" font-weight="bold" fill="#111">R-X(3-8)-H</text>
+
+    <text x="449" y="65" text-anchor="middle" font-size="9" fill="#555">RADFELKH @ pos 389</text>
+  </g>
+
+  <!-- === Spacing annotation (below bar) === -->
+  <g>
+    <line x1="173" y1="200" x2="173" y2="220" stroke="#333" stroke-width="1"/>
+    <line x1="449" y1="200" x2="449" y2="220" stroke="#333" stroke-width="1"/>
+    <line x1="173" y1="220" x2="449" y2="220" stroke="#333" stroke-width="1"/>
+
+    <!-- Center tick -->
+    <line x1="311" y1="220" x2="311" y2="230" stroke="#333" stroke-width="1"/>
+
+    <!-- Spacing label -->
+    <rect x="261" y="230" width="100" height="20" rx="3" fill="#fff" stroke="#333" stroke-width="1"/>
+    <text x="311" y="244" text-anchor="middle" font-size="10" font-weight="bold" fill="#111">330 aa spacing</text>
+  </g>
+
+  <!-- === Amino acid scale bar === -->
+  <g transform="translate(80, 270)">
+    <line x1="0" y1="0" x2="840" y2="0" stroke="#333" stroke-width="1.5"/>
+
+    <!-- Tick marks every ~100 aa -->
+    <line x1="0" y1="0" x2="0" y2="8" stroke="#333" stroke-width="1"/>
+    <text x="0" y="20" text-anchor="middle" font-size="9" fill="#555">1</text>
+
+    <line x1="95" y1="0" x2="95" y2="8" stroke="#333" stroke-width="1"/>
+    <text x="95" y="20" text-anchor="middle" font-size="9" fill="#555">100</text>
+
+    <line x1="190" y1="0" x2="190" y2="8" stroke="#333" stroke-width="1"/>
+    <text x="190" y="20" text-anchor="middle" font-size="9" fill="#555">200</text>
+
+    <line x1="285" y1="0" x2="285" y2="8" stroke="#333" stroke-width="1"/>
+    <text x="285" y="20" text-anchor="middle" font-size="9" fill="#555">300</text>
+
+    <line x1="380" y1="0" x2="380" y2="8" stroke="#333" stroke-width="1"/>
+    <text x="380" y="20" text-anchor="middle" font-size="9" fill="#555">400</text>
+
+    <line x1="475" y1="0" x2="475" y2="8" stroke="#333" stroke-width="1"/>
+    <text x="475" y="20" text-anchor="middle" font-size="9" fill="#555">500</text>
+
+    <line x1="570" y1="0" x2="570" y2="8" stroke="#333" stroke-width="1"/>
+    <text x="570" y="20" text-anchor="middle" font-size="9" fill="#555">600</text>
+
+    <line x1="665" y1="0" x2="665" y2="8" stroke="#333" stroke-width="1"/>
+    <text x="665" y="20" text-anchor="middle" font-size="9" fill="#555">700</text>
+
+    <line x1="760" y1="0" x2="760" y2="8" stroke="#333" stroke-width="1"/>
+    <text x="760" y="20" text-anchor="middle" font-size="9" fill="#555">800</text>
+
+    <line x1="840" y1="0" x2="840" y2="8" stroke="#333" stroke-width="1"/>
+    <text x="840" y="20" text-anchor="middle" font-size="9" fill="#555">884</text>
+
+    <text x="420" y="38" text-anchor="middle" font-size="10" fill="#555">Amino Acid Position</text>
+  </g>
+
+  <!-- === Key features annotation === -->
+  <g transform="translate(80, 330)">
+    <text x="0" y="0" font-size="10" fill="#333" font-weight="bold">Key:</text>
+    <rect x="35" y="-10" width="14" height="14" fill="#666" stroke="#333" stroke-width="1"/>
+    <text x="55" y="1" font-size="10" fill="#333">HEPN catalytic domain (R-X(3-8)-H motif)</text>
+    <rect x="300" y="-10" width="14" height="14" fill="#e0e0e0" stroke="#333" stroke-width="1"/>
+    <text x="320" y="1" font-size="10" fill="#333">N-terminal domain</text>
+    <rect x="440" y="-10" width="14" height="14" fill="#f0f0f0" stroke="#333" stroke-width="1"/>
+    <text x="460" y="1" font-size="10" fill="#333">Inter-domain linker</text>
+    <rect x="590" y="-10" width="14" height="14" fill="#d0d0d0" stroke="#333" stroke-width="1"/>
+    <text x="610" y="1" font-size="10" fill="#333">C-terminal domain</text>
+  </g>
+
+  <!-- Caption -->
+  <text x="500" y="368" text-anchor="middle" font-size="10" fill="#555">Dual HEPN domains with R-X(3-8)-H catalytic motifs are separated by 330 amino acids, defining a novel Class 2 Type VI CRISPR effector.</text>
+</svg>
