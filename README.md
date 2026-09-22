@@ -8,8 +8,9 @@ structure screens, and (3) **oracle-in-the-loop** constrained sequence search
 over inter-domain linkers, scored by predicted OFF vs ON catalytic geometry.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22905895.svg)](https://doi.org/10.5281/zenodo.22905895)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue?logo=python&logoColor=white)](https://www.python.org)
-[![JOSS](https://img.shields.io/badge/JOSS-draft-lightgrey)](paper/paper.md)
+[![JOSS](https://img.shields.io/badge/JOSS-submitted-yellow)](paper/paper.md)
 
 [Quick start](#quick-start) · [GPU smoke](#gpu-smoke-recipe) · [Architecture](#pipeline-architecture) · [Dual-use](docs/DUAL_USE.md) · [Third-party](THIRD_PARTY_NOTICES.md) · [JOSS paper](paper/paper.md) · [RL data format](RL_TRAINING_FORMAT.md)
 
