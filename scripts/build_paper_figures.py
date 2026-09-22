@@ -88,44 +88,111 @@ def fig_mining():
     return out
 
 
-def fig_pipeline():
-    """Simple pipeline diagram as matplotlib boxes."""
-    fig, ax = plt.subplots(figsize=(8.5, 2.6), constrained_layout=True)
-    ax.set_xlim(0, 10)
-    ax.set_ylim(0, 3)
-    ax.axis("off")
-    boxes = [
-        (0.3, 1.0, "Mine\ncontigs", "#e5e7eb"),
-        (2.3, 1.0, "Bootstrap\nbaselines", "#e5e7eb"),
-        (4.3, 1.0, "Generate\nlinkers only", "#dbeafe"),
-        (6.3, 1.0, "Score\nOFF / ON /\nmismatch", "#dbeafe"),
-        (8.3, 1.0, "Update\nPSSM bias", "#dbeafe"),
-    ]
-    for x, y, text, color in boxes:
-        ax.add_patch(
-            plt.Rectangle((x, y), 1.5, 1.2, facecolor=color, edgecolor="#111", linewidth=1.2)
+def _rounded_box(ax, x, y, w, h, text, facecolor, fontsize=7.5):
+    ax.add_patch(
+        plt.Rectangle(
+            (x, y),
+            w,
+            h,
+            facecolor=facecolor,
+            edgecolor="#111827",
+            linewidth=1.15,
+            zorder=2,
         )
-        ax.text(x + 0.75, y + 0.6, text, ha="center", va="center", fontsize=8)
-    for i in range(4):
-        x0 = boxes[i][0] + 1.5
-        x1 = boxes[i + 1][0]
-        ax.annotate(
-            "",
-            xy=(x1, 1.6),
-            xytext=(x0, 1.6),
-            arrowprops=dict(arrowstyle="->", color="#111", lw=1.2),
-        )
-    ax.text(
-        5,
-        0.35,
-        "Freeze REC + HEPNs · mutate linkers · structure oracle is the judge",
-        ha="center",
-        fontsize=9,
-        color="#374151",
     )
-    ax.set_title("CASCADE loop (single GPU; Vast.ai optional)", fontsize=11, pad=8)
+    ax.text(
+        x + w / 2,
+        y + h / 2,
+        text,
+        ha="center",
+        va="center",
+        fontsize=fontsize,
+        color="#111827",
+        zorder=3,
+        wrap=True,
+    )
+
+
+def fig_pipeline():
+    """Full CASCADE evolution loop (no cloud/ops)."""
+    fig, ax = plt.subplots(figsize=(9.2, 5.6), constrained_layout=True)
+    ax.set_xlim(0, 12)
+    ax.set_ylim(0, 8)
+    ax.axis("off")
+    ax.set_title(
+        "CASCADE evolution loop — freeze recognition & catalysis; search linkers only",
+        fontsize=11,
+        pad=6,
+    )
+
+    # Upstream (once per baseline)
+    _rounded_box(ax, 0.4, 6.7, 2.4, 0.9, "Phase 0\nStrict mining_v3", "#f3f4f6", 8)
+    _rounded_box(ax, 3.2, 6.7, 2.6, 0.9, "Phase 1\nAnnotate + HEPN\nanchors + screen", "#f3f4f6", 8)
+    _rounded_box(ax, 6.2, 6.7, 2.6, 0.9, "Baseline enzyme\n+ native crRNA\n+ fusion trigger", "#e5e7eb", 8)
+    ax.annotate("", xy=(3.2, 7.15), xytext=(2.8, 7.15),
+                arrowprops=dict(arrowstyle="->", color="#111827", lw=1.2))
+    ax.annotate("", xy=(6.2, 7.15), xytext=(5.8, 7.15),
+                arrowprops=dict(arrowstyle="->", color="#111827", lw=1.2))
+    ax.annotate("", xy=(7.5, 6.7), xytext=(7.5, 6.35),
+                arrowprops=dict(arrowstyle="->", color="#111827", lw=1.2))
+    ax.text(9.5, 7.15, "done once\nper lineage", ha="left", va="center", fontsize=7.5, color="#4b5563")
+
+    # Gen 0
+    _rounded_box(ax, 5.5, 5.35, 4.0, 0.9, "Gen 0 — score wild-type OFF + ON\nset EvolutionGym fitness baseline", "#dbeafe", 8)
+
+    # Main loop row
+    _rounded_box(ax, 0.35, 3.55, 2.3, 1.25,
+                 "1. Select parent\n(tournament / top-K)\nnever-regress global best", "#dbeafe", 7.2)
+    _rounded_box(ax, 2.9, 3.55, 2.5, 1.25,
+                 "2. Generate linkers\nGen1: PXDesign backbone\nGen2+: MPNN refine\n(10→50% sites free)", "#bfdbfe", 7.2)
+    _rounded_box(ax, 5.65, 3.55, 2.4, 1.25,
+                 "3. Stitch WT HEPN1/2\nresolve X→baseline/G\nfail → fitness penalty", "#93c5fd", 7.2)
+    _rounded_box(ax, 8.3, 3.55, 3.3, 1.25,
+                 "4. Hierarchical oracle\nmini OFF/ON → gate\n18Å / 12Å\npass → base ternary\n+ 1/2/3-mismatch", "#60a5fa", 7.0)
+
+    for x0, x1 in [(2.65, 2.9), (5.4, 5.65), (8.05, 8.3)]:
+        ax.annotate("", xy=(x1, 4.15), xytext=(x0, 4.15),
+                    arrowprops=dict(arrowstyle="->", color="#111827", lw=1.25))
+
+    # Bottom feedback
+    _rounded_box(ax, 8.3, 1.55, 3.3, 1.35,
+                 "5. Composite fitness\nshift + ipTM + AF2-IG\n− mismatch penalties", "#fef3c7", 7.5)
+    _rounded_box(ax, 4.5, 1.55, 3.4, 1.35,
+                 "6. EvolutionGym\nrelative advantage vs Gen0\nEMA mutation weights\nexport MPNN PSSM", "#fde68a", 7.5)
+    _rounded_box(ax, 0.35, 1.55, 3.7, 1.35,
+                 "7. Population update\nmerge top-K · next gen\nor abandon if stagnant\n(elite → save FASTA/CIF)", "#fcd34d", 7.5)
+
+    ax.annotate("", xy=(9.95, 2.9), xytext=(9.95, 3.55),
+                arrowprops=dict(arrowstyle="->", color="#111827", lw=1.25))
+    ax.annotate("", xy=(7.9, 2.2), xytext=(8.3, 2.2),
+                arrowprops=dict(arrowstyle="->", color="#111827", lw=1.25))
+    ax.annotate("", xy=(4.05, 2.2), xytext=(4.5, 2.2),
+                arrowprops=dict(arrowstyle="->", color="#111827", lw=1.25))
+    # feedback arrow back to select
+    ax.annotate(
+        "",
+        xy=(1.5, 3.55),
+        xytext=(1.5, 2.9),
+        arrowprops=dict(arrowstyle="->", color="#111827", lw=1.4),
+    )
+    ax.text(1.65, 3.2, "PSSM + parents", fontsize=7, color="#374151")
+
+    # Frozen vs mutable callout
+    ax.add_patch(plt.Rectangle((0.35, 0.25), 11.25, 0.95, facecolor="#f9fafb",
+                               edgecolor="#9ca3af", linewidth=1.0, zorder=1))
+    ax.text(
+        6.0,
+        0.72,
+        "Frozen: REC / native crRNA pocket + HEPN1/HEPN2 sequences\n"
+        "Mutable: inter-domain linkers (IDL1/IDL2) · Judge: Protenix or Cattle-Prod (EVAL_CMD)",
+        ha="center",
+        va="center",
+        fontsize=8,
+        color="#111827",
+    )
+
     out = FIG / "fig_pipeline.png"
-    fig.savefig(out, dpi=200)
+    fig.savefig(out, dpi=220)
     plt.close(fig)
     return out
 
