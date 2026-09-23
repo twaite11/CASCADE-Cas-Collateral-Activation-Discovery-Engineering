@@ -10,6 +10,7 @@ authors:
   - family-names: Waite
     given-names: Tyler
     email: twaite11@wgu.edu
+    orcid: "https://orcid.org/0009-0001-0673-2099"
 abstract: >-
   Oracle-in-the-loop pipeline for strict Cas13-like mining and constrained
   linker design scored by predicted OFF/ON catalytic geometry.
