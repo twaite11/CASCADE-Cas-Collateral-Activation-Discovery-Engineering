@@ -28,10 +28,10 @@ structure model predicts clearer OFF versus ON catalytic geometry. Recognition
 ProteinMPNN propose linker changes; Protenix or Cattle-Prod score unbound,
 trigger-bound, and mismatch complexes; `EvolutionGym` converts relative fitness
 into a ProteinMPNN PSSM for the next generation. We demonstrate the stack on
-three verified *Listeria booriae* Cas13a proteins that underpin a filed
-provisional patent on switch scaffolds, and shortlist linker morphs with
-positive composite fitness for continued evolution and wet-lab testing. All
-scores here are *in silico*.
+three verified *Listeria booriae* Cas13a proteins that underpin U.S. Provisional
+Patent Application No. 64/033,745 [@waite2026provisional], and shortlist linker
+morphs with positive composite fitness for continued evolution and wet-lab
+testing. All scores here are *in silico*.
 
 # Statement of need
 
@@ -111,9 +111,9 @@ Strict remine kept three *L. booriae* Cas13a ORFs with adjacent CRISPR arrays
 
 Campaign 2 (*Bacteroides* / *Flavobacterium* / *Leptotrichia*) accepted
 **0/102** ORFs under the same filters (\autoref{fig:mining}). These three
-scaffolds are the sequences covered by a **provisional patent application**
-filed on the CASCADE switch compositions (sequence listing prepared April
-2026); CASCADE is the discovery and design software behind that filing.
+scaffolds are the sequences covered by U.S. Provisional Patent Application
+No. 64/033,745 [@waite2026provisional]; CASCADE is the discovery and design
+software behind that filing.
 
 ![mining_v3 Campaign 1 vs Campaign 2: evaluated vs accepted ORFs, and Campaign 2 rejection reasons.](figures/fig_mining_campaigns.png){#fig:mining}
 
@@ -137,12 +137,12 @@ scaffold exhaustion.
 
 CASCADE is already the operational pipeline for the author’s Cas13 switch
 program: it produced the three remine-verified *L. booriae* Cas13a baselines
-that are the subject of a filed provisional patent on switch scaffolds and
-compositions, and it generated the JAAROR linker morphs with the strongest
-composite fitness in the archived campaign (e.g. `L59c434_g02_v28` and the
-wet-lab shortlist). Those morphs remain under active CASCADE evolution while
-GPU time allows. Reproducible mining tables, RL JSONL, figures, Apache-2.0
-code, dual-use notes, CPU tests, and the Zenodo software archive
+that are claimed in U.S. Provisional Patent Application No. 64/033,745
+[@waite2026provisional], and it generated the JAAROR linker morphs with the
+strongest composite fitness in the archived campaign (e.g. `L59c434_g02_v28`
+and the wet-lab shortlist). Those morphs remain under active CASCADE evolution
+while GPU time allows. Reproducible mining tables, RL JSONL, figures,
+Apache-2.0 code, dual-use notes, CPU tests, and the Zenodo software archive
 [@cascade_audit2026] document that research use for others to extend.
 
 # AI usage disclosure
