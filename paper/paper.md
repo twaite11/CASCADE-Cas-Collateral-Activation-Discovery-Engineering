@@ -1,5 +1,5 @@
 ---
-title: 'CASCADE: constrained Cas13 mining and linker design under two-state structural scoring'
+title: 'CASCADE: oracle-in-the-loop active learning for Cas13 mining and allosteric switch design'
 tags:
   - Python
   - CRISPR
