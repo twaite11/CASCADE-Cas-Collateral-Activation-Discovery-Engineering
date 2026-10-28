@@ -51,7 +51,7 @@ Protenix-compatible oracles (optional Cattle-Prod).
 Diffusion binders and global MPNN redesign optimize interfaces or monomer
 metrics. CASCADE freezes recognition and catalysis, mutates mechanical
 couplers, scores conformational hypotheses, stitches wild-type HEPNs after
-generation, and logs JSONL for optional post-training [@wang2024drakes].
+generation, and logs JSONL for optional post-training.
 Generators and oracles stay external; weights are not redistributed.
 
 # Software design
